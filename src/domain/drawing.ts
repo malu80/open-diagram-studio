@@ -1,3 +1,6 @@
+import type { DiagramNodeKind } from './diagram'
+import { specFor } from './node-kinds'
+
 /**
  * Turning a drag into a shape.
  *
@@ -45,10 +48,14 @@ export function resolveDrawRect(
   }
 }
 
-/** Shapes that read as wrong unless both axes match — Shift is implied. */
-const ALWAYS_SQUARE = new Set(['diamond'])
-
-/** True when this drag should be squared off. */
-export function shouldConstrain(kind: string, shiftHeld: boolean): boolean {
-  return shiftHeld || ALWAYS_SQUARE.has(kind)
+/**
+ * True when this drag should be squared off — either because Shift is held or
+ * because the shape reads as wrong on unequal axes. The per-kind rule lives in
+ * the node-kind table so every tool agrees on it.
+ */
+export function shouldConstrain(
+  kind: DiagramNodeKind,
+  shiftHeld: boolean,
+): boolean {
+  return shiftHeld || specFor(kind).alwaysSquare === true
 }

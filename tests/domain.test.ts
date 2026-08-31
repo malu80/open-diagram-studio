@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createBlankDocument } from '../src/domain/diagram'
+import { DOCUMENT_VERSION, createBlankDocument } from '../src/domain/diagram'
 
 describe('diagram document', () => {
   it('creates an empty versioned document with a valid timestamp', () => {
@@ -8,7 +8,7 @@ describe('diagram document', () => {
     expect(document).toMatchObject({
       id: 'current-diagram',
       title: 'Untitled diagram',
-      version: 1,
+      version: DOCUMENT_VERSION,
       nodes: [],
       edges: [],
     })

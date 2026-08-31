@@ -1,17 +1,16 @@
 import {
-  MarkerType,
-  applyEdgeChanges,
   applyNodeChanges,
   type Connection,
-  type Edge,
-  type EdgeChange,
   type Node,
   type NodeChange,
 } from '@xyflow/react'
 import { create } from 'zustand'
 import { nodeDefaults } from '../design-system/tokens'
+import { specFor } from '../domain/node-kinds'
 import {
   createBlankDocument,
+  type FreehandStroke,
+  type StrokePoint,
   type DiagramDocument,
   type DiagramEdge,
   type DiagramNode,
@@ -24,11 +23,13 @@ export interface DiagramNodeData extends Record<string, unknown> {
   fillColor: string
   strokeColor: string
   strokeWidth: number
+  width: number
+  height: number
+  freehand?: FreehandStroke
 }
 
 export type FlowDiagramNode = Node<DiagramNodeData, 'diagramNode'>
 type SaveState = 'loading' | 'saving' | 'saved' | 'error'
-type PendingConnector = { nodeId: string; handleId: string }
 type InteractionLog = { id: string; time: string; message: string }
 
 interface DiagramState {
@@ -37,7 +38,6 @@ interface DiagramState {
   edges: DiagramEdge[]
   selectedNodeIds: string[]
   selectedEdgeIds: string[]
-  pendingConnector: PendingConnector | null
   interactionLog: InteractionLog[]
   /** In-app clipboard. Deliberately not the system clipboard: reading that
    *  needs a permission prompt, and copying between boards is not a goal. */
@@ -55,11 +55,29 @@ interface DiagramState {
     width: number,
     height: number,
   ) => void
+  /** A line drawn on the board, with either end optionally on a node. */
+  addLine: (line: {
+    from: StrokePoint
+    to: StrokePoint
+    fromNodeId?: string
+    toNodeId?: string
+    routing: NonNullable<DiagramEdge['routing']>
+    endArrow: NonNullable<DiagramEdge['endArrow']>
+  }) => void
+  addFreehandNode: (stroke: {
+    pen: FreehandStroke['pen']
+    points: FreehandStroke['points']
+    x: number
+    y: number
+    width: number
+    height: number
+    color: string
+    strokeWidth: number
+  }) => void
+  /** Removes the freehand strokes the eraser passed over. */
+  eraseNodes: (nodeIds: string[]) => void
   onNodesChange: (changes: NodeChange<FlowDiagramNode>[]) => void
-  onEdgesChange: (changes: EdgeChange[]) => void
   connect: (connection: Connection) => void
-  clickConnector: (nodeId: string, handleId: string) => void
-  cancelConnector: () => void
   logInteraction: (message: string) => void
   clearInteractionLog: () => void
   setSelection: (nodeIds: string[], edgeIds: string[]) => void
@@ -73,6 +91,19 @@ interface DiagramState {
   removeNode: (nodeId: string) => void
   updateNodeLabel: (nodeId: string, label: string) => void
   resizeTextNode: (nodeId: string, width: number, height: number) => void
+  updateSelectedEdge: (
+    patch: Partial<
+      Pick<
+        DiagramEdge,
+        | 'routing'
+        | 'startArrow'
+        | 'endArrow'
+        | 'strokeColor'
+        | 'strokeWidth'
+        | 'strokeStyle'
+      >
+    >,
+  ) => void
   updateSelectedNode: (
     patch: Partial<
       Pick<
@@ -103,19 +134,6 @@ const appendInteraction = (
   console.info(`[Diagram Studio] ${entry.time} ${message}`)
   return [...entries, entry].slice(-12)
 }
-const labels: Record<DiagramNodeKind, string> = {
-  text: '',
-  rectangle: 'Rectangle',
-  roundedRectangle: 'Rounded rectangle',
-  ellipse: 'Ellipse',
-  diamond: 'Decision',
-  client: 'Client',
-  server: 'Server',
-  database: 'Database',
-  queue: 'Queue',
-  cloud: 'Cloud',
-}
-
 /** How far a duplicate or paste lands from its source. */
 const PASTE_OFFSET = 24
 
@@ -124,6 +142,9 @@ const PASTE_OFFSET = 24
  * selection — an edge to something that was not copied has nothing to attach
  * to on the other side.
  */
+const offsetPoint = (point: StrokePoint | undefined, offset: number) =>
+  point ? { x: point.x + offset, y: point.y + offset } : undefined
+
 const cloneSelection = (
   nodes: DiagramNode[],
   edges: DiagramEdge[],
@@ -135,15 +156,20 @@ const cloneSelection = (
     idByOriginal.set(node.id, id)
     return { ...node, id, x: node.x + offset, y: node.y + offset }
   })
+  const attachedEndSurvives = (end: string | undefined) =>
+    end === undefined || idByOriginal.has(end)
   const clonedEdges = edges
     .filter(
-      (edge) => idByOriginal.has(edge.source) && idByOriginal.has(edge.target),
+      (edge) =>
+        attachedEndSurvives(edge.source) && attachedEndSurvives(edge.target),
     )
     .map((edge) => ({
       ...edge,
       id: crypto.randomUUID(),
-      source: idByOriginal.get(edge.source)!,
-      target: idByOriginal.get(edge.target)!,
+      source: edge.source ? idByOriginal.get(edge.source) : undefined,
+      target: edge.target ? idByOriginal.get(edge.target) : undefined,
+      sourcePoint: offsetPoint(edge.sourcePoint, offset),
+      targetPoint: offsetPoint(edge.targetPoint, offset),
     }))
   return { nodes: clonedNodes, edges: clonedEdges }
 }
@@ -152,16 +178,21 @@ const createNode = (
   kind: DiagramNodeKind,
   index: number,
   bounds?: { x: number; y: number; width: number; height: number },
-): DiagramNode => ({
-  id: crypto.randomUUID(),
-  kind,
-  x: bounds?.x ?? 120 + (index % 4) * 36,
-  y: bounds?.y ?? 100 + (index % 5) * 34,
-  width: bounds?.width ?? (kind === 'text' ? 200 : kind === 'diamond' ? 120 : 156),
-  height: bounds?.height ?? (kind === 'text' ? 40 : kind === 'diamond' ? 120 : 84),
-  label: labels[kind],
-  ...nodeDefaults,
-})
+): DiagramNode => {
+  const spec = specFor(kind)
+  return {
+    id: crypto.randomUUID(),
+    kind,
+    x: bounds?.x ?? 120 + (index % 4) * 36,
+    y: bounds?.y ?? 100 + (index % 5) * 34,
+    width: bounds?.width ?? spec.width,
+    height: bounds?.height ?? spec.height,
+    label: spec.label,
+    ...nodeDefaults,
+    ...(spec.fill ? { fillColor: spec.fill } : {}),
+    ...(spec.zIndex !== undefined ? { zIndex: spec.zIndex } : {}),
+  }
+}
 
 export const toFlowNode = (
   node: DiagramNode,
@@ -173,28 +204,19 @@ export const toFlowNode = (
   style: { width: node.width, height: node.height },
   measured: { width: node.width, height: node.height },
   selected: selectedNodeIds.includes(node.id),
+  // Frames carry a negative z so they sit behind the nodes they group.
+  zIndex: node.zIndex,
   data: {
     kind: node.kind,
     label: node.label,
     fillColor: node.fillColor,
     strokeColor: node.strokeColor,
     strokeWidth: node.strokeWidth,
-  },
-})
-
-export const toFlowEdge = (
-  edge: DiagramEdge,
-  selectedEdgeIds: string[],
-): Edge => ({
-  ...edge,
-  sourceHandle: edge.sourceHandle?.replace(/^(source|target)-/, '') ?? 'right',
-  targetHandle: edge.targetHandle?.replace(/^(source|target)-/, '') ?? 'left',
-  selected: selectedEdgeIds.includes(edge.id),
-  interactionWidth: 24,
-  markerEnd: { type: MarkerType.ArrowClosed, color: '#31352f' },
-  style: {
-    stroke: selectedEdgeIds.includes(edge.id) ? '#2f6f52' : '#31352f',
-    strokeWidth: selectedEdgeIds.includes(edge.id) ? 3 : 2,
+    // A freehand stroke is drawn from normalised points, so it needs the box
+    // it is being drawn into.
+    width: node.width,
+    height: node.height,
+    freehand: node.freehand,
   },
 })
 
@@ -204,7 +226,6 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
   edges: initialDocument.edges,
   selectedNodeIds: [],
   selectedEdgeIds: [],
-  pendingConnector: null,
   interactionLog: [],
   clipboard: { nodes: [], edges: [] },
   hydrated: false,
@@ -219,8 +240,11 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set({
       title: nextDocument.title,
       nodes,
+      // An attached end must still have its node; a pinned end always stands.
       edges: nextDocument.edges.filter(
-        (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target),
+        (edge) =>
+          (edge.source === undefined || nodeIds.has(edge.source)) &&
+          (edge.target === undefined || nodeIds.has(edge.target)),
       ),
       hydrated: true,
       saveState: 'saved',
@@ -249,6 +273,64 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         nodes: [...state.nodes, node],
         selectedNodeIds: [node.id],
         selectedEdgeIds: [],
+      }
+    }),
+  addLine: (line) =>
+    set((state) => {
+      const id = crypto.randomUUID()
+      const edge: DiagramEdge = {
+        id,
+        routing: line.routing,
+        endArrow: line.endArrow,
+        // An end dropped on a node attaches to it; otherwise it stays put.
+        source: line.fromNodeId,
+        target: line.toNodeId,
+        sourcePoint: line.fromNodeId ? undefined : line.from,
+        targetPoint: line.toNodeId ? undefined : line.to,
+      }
+      return {
+        edges: [...state.edges, edge],
+        selectedNodeIds: [],
+        selectedEdgeIds: [id],
+        interactionLog: appendInteraction(state.interactionLog, 'Line drawn'),
+      }
+    }),
+  addFreehandNode: (stroke) =>
+    set((state) => {
+      const node: DiagramNode = {
+        id: crypto.randomUUID(),
+        kind: 'freehand',
+        x: stroke.x,
+        y: stroke.y,
+        width: stroke.width,
+        height: stroke.height,
+        label: '',
+        fillColor: 'transparent',
+        strokeColor: stroke.color,
+        strokeWidth: stroke.strokeWidth,
+        freehand: { pen: stroke.pen, points: stroke.points },
+      }
+      return {
+        nodes: [...state.nodes, node],
+        interactionLog: appendInteraction(
+          state.interactionLog,
+          `Drew a ${stroke.pen} stroke`,
+        ),
+      }
+    }),
+  eraseNodes: (nodeIds) =>
+    set((state) => {
+      const removed = new Set(nodeIds)
+      if (removed.size === 0) return state
+      const nodes = state.nodes.filter((node) => !removed.has(node.id))
+      if (nodes.length === state.nodes.length) return state
+      return {
+        nodes,
+        selectedNodeIds: state.selectedNodeIds.filter((id) => !removed.has(id)),
+        interactionLog: appendInteraction(
+          state.interactionLog,
+          `Erased ${state.nodes.length - nodes.length} stroke(s)`,
+        ),
       }
     }),
   onNodesChange: (changes) =>
@@ -305,30 +387,12 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         nodes,
         edges: state.edges.filter(
           (edge) =>
-            remainingIds.has(edge.source) && remainingIds.has(edge.target),
+            (edge.source === undefined || remainingIds.has(edge.source)) &&
+            (edge.target === undefined || remainingIds.has(edge.target)),
         ),
         selectedNodeIds: nextFlowNodes
           .filter((node) => node.selected)
           .map((node) => node.id),
-      }
-    }),
-  onEdgesChange: (changes) =>
-    set((state) => {
-      const flowEdges = state.edges.map((edge) =>
-        toFlowEdge(edge, state.selectedEdgeIds),
-      )
-      const nextEdges = applyEdgeChanges(changes, flowEdges)
-      return {
-        edges: nextEdges.map((edge) => ({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          sourceHandle: edge.sourceHandle,
-          targetHandle: edge.targetHandle,
-        })),
-        selectedEdgeIds: nextEdges
-          .filter((edge) => edge.selected)
-          .map((edge) => edge.id),
       }
     }),
   connect: (connection) => {
@@ -366,7 +430,6 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         ],
         selectedNodeIds: [],
         selectedEdgeIds: [id],
-        pendingConnector: null,
         interactionLog: appendInteraction(
           state.interactionLog,
           `Arrow created by drag: ${sourceLabel} -> ${targetLabel}`,
@@ -374,65 +437,6 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       }
     })
   },
-  clickConnector: (nodeId, handleId) =>
-    set((state) => {
-      const pending = state.pendingConnector
-      const nodeLabel =
-        state.nodes.find((node) => node.id === nodeId)?.label ?? nodeId
-      if (!pending) {
-        return {
-          pendingConnector: { nodeId, handleId },
-          interactionLog: appendInteraction(
-            state.interactionLog,
-            `First connector: ${nodeLabel}.${handleId}; click a second connector`,
-          ),
-        }
-      }
-      if (pending.nodeId === nodeId && pending.handleId === handleId) {
-        return {
-          pendingConnector: null,
-          interactionLog: appendInteraction(
-            state.interactionLog,
-            `Arrow cancelled at ${nodeLabel}.${handleId}`,
-          ),
-        }
-      }
-      const id = crypto.randomUUID()
-      const sourceLabel =
-        state.nodes.find((node) => node.id === pending.nodeId)?.label ??
-        pending.nodeId
-      return {
-        edges: [
-          ...state.edges,
-          {
-            id,
-            source: pending.nodeId,
-            target: nodeId,
-            sourceHandle: pending.handleId,
-            targetHandle: handleId,
-          },
-        ],
-        selectedNodeIds: [],
-        selectedEdgeIds: [id],
-        pendingConnector: null,
-        interactionLog: appendInteraction(
-          state.interactionLog,
-          `Arrow created: ${sourceLabel}.${pending.handleId} -> ${nodeLabel}.${handleId}`,
-        ),
-      }
-    }),
-  cancelConnector: () =>
-    set((state) =>
-      state.pendingConnector
-        ? {
-            pendingConnector: null,
-            interactionLog: appendInteraction(
-              state.interactionLog,
-              'Pending arrow cancelled',
-            ),
-          }
-        : state,
-    ),
   logInteraction: (message) =>
     set((state) => ({
       interactionLog: appendInteraction(state.interactionLog, message),
@@ -463,7 +467,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set((state) =>
       state.selectedNodeIds.length === 0 && state.selectedEdgeIds.length === 0
         ? state
-        : { selectedNodeIds: [], selectedEdgeIds: [], pendingConnector: null },
+        : { selectedNodeIds: [], selectedEdgeIds: [] },
     ),
   duplicateSelected: () =>
     set((state) => {
@@ -493,8 +497,14 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       return {
         clipboard: {
           nodes,
+          // Only edges wholly inside the copy: an edge to something that was
+          // not copied has nothing to attach to on the other side.
           edges: state.edges.filter(
-            (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target),
+            (edge) =>
+              edge.source !== undefined &&
+              edge.target !== undefined &&
+              nodeIds.has(edge.source) &&
+              nodeIds.has(edge.target),
           ),
         },
         interactionLog: appendInteraction(
@@ -540,12 +550,11 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       edges: state.edges.filter(
         (edge) =>
           !selectedEdgeIds.includes(edge.id) &&
-          !removedNodes.has(edge.source) &&
-          !removedNodes.has(edge.target),
+          !(edge.source !== undefined && removedNodes.has(edge.source)) &&
+          !(edge.target !== undefined && removedNodes.has(edge.target)),
       ),
       selectedNodeIds: [],
       selectedEdgeIds: [],
-      pendingConnector: null,
       interactionLog: appendInteraction(
         state.interactionLog,
         `Deleted ${selectedNodeIds.length} node(s) and ${selectedEdgeIds.length} arrow(s)`,
@@ -559,10 +568,6 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         (edge) => edge.source !== nodeId && edge.target !== nodeId,
       ),
       selectedNodeIds: state.selectedNodeIds.filter((id) => id !== nodeId),
-      pendingConnector:
-        state.pendingConnector?.nodeId === nodeId
-          ? null
-          : state.pendingConnector,
       interactionLog: appendInteraction(
         state.interactionLog,
         'Empty text box discarded',
@@ -578,6 +583,12 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
     set((state) => ({
       nodes: state.nodes.map((node) =>
         node.id === nodeId ? { ...node, width, height } : node,
+      ),
+    })),
+  updateSelectedEdge: (patch) =>
+    set((state) => ({
+      edges: state.edges.map((edge) =>
+        state.selectedEdgeIds.includes(edge.id) ? { ...edge, ...patch } : edge,
       ),
     })),
   updateSelectedNode: (patch) =>

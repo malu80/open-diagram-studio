@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie'
 import type { DiagramDocument } from '../domain/diagram'
+import { parseDocument } from '../domain/document-schema'
 
 interface DiagramRecord {
   id: string
@@ -21,7 +22,10 @@ const database = new DiagramDatabase()
 export const diagramRepository = {
   async load(): Promise<DiagramDocument | null> {
     const record = await database.diagrams.get('current-diagram')
-    return record?.document ?? null
+    if (!record) return null
+    // Everything read back is validated and migrated forward: stored data
+    // outlives the code that wrote it.
+    return parseDocument(record.document)
   },
 
   async save(document: DiagramDocument): Promise<void> {

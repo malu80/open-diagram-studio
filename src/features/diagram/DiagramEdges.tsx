@@ -1,35 +1,20 @@
 import { ViewportPortal } from '@xyflow/react'
-import type { DiagramEdge, DiagramNode } from '../../domain/diagram'
+import {
+  edgeDefaults,
+  type DiagramEdge,
+  type DiagramNode,
+} from '../../domain/diagram'
+import {
+  buildEdgePath,
+  resolveEdgeEnds,
+  strokeDashArray,
+} from '../../domain/edge-path'
 
 interface DiagramEdgesProps {
   edges: DiagramEdge[]
   nodes: DiagramNode[]
   selectedEdgeIds: string[]
   onSelect: (edgeId: string) => void
-}
-
-function endpoint(node: DiagramNode, handle: string | null | undefined) {
-  const side = handle?.replace(/^(source|target)-/, '') ?? 'right'
-  switch (side) {
-    case 'top':
-      return { x: node.x + node.width / 2, y: node.y, dx: 0, dy: -1 }
-    case 'bottom':
-      return {
-        x: node.x + node.width / 2,
-        y: node.y + node.height,
-        dx: 0,
-        dy: 1,
-      }
-    case 'left':
-      return { x: node.x, y: node.y + node.height / 2, dx: -1, dy: 0 }
-    default:
-      return {
-        x: node.x + node.width,
-        y: node.y + node.height / 2,
-        dx: 1,
-        dy: 0,
-      }
-  }
 }
 
 export function DiagramEdges({
@@ -44,9 +29,10 @@ export function DiagramEdges({
     <ViewportPortal>
       <svg className="diagram-edges" aria-label="Diagram arrows">
         <defs>
-          {/* userSpaceOnUse keeps the head a fixed size whatever the stroke
-              width is, and the slight concave tail stops it reading as a
-              blunt triangle at low zoom. */}
+          {/* One marker serves both ends: `auto-start-reverse` flips it when
+              used as a start marker. `context-stroke` makes it follow whatever
+              colour the line is, so a recoloured edge needs no second marker.
+              `userSpaceOnUse` keeps the head a fixed size at any stroke width. */}
           <marker
             id="diagram-arrowhead"
             viewBox="0 0 11 8"
@@ -54,7 +40,7 @@ export function DiagramEdges({
             markerHeight="8"
             refX="10"
             refY="4"
-            orient="auto"
+            orient="auto-start-reverse"
             markerUnits="userSpaceOnUse"
           >
             <path
@@ -65,16 +51,16 @@ export function DiagramEdges({
           </marker>
         </defs>
         {edges.map((edge) => {
-          const sourceNode = nodeById.get(edge.source)
-          const targetNode = nodeById.get(edge.target)
-          if (!sourceNode || !targetNode) return null
-          const source = endpoint(sourceNode, edge.sourceHandle)
-          const target = endpoint(targetNode, edge.targetHandle)
-          const distance = Math.max(
-            48,
-            Math.min(140, Math.hypot(target.x - source.x, target.y - source.y) / 2),
-          )
-          const path = `M ${source.x} ${source.y} C ${source.x + source.dx * distance} ${source.y + source.dy * distance}, ${target.x + target.dx * distance} ${target.y + target.dy * distance}, ${target.x} ${target.y}`
+          const ends = resolveEdgeEnds(edge, nodeById)
+          if (!ends) return null
+
+          const routing = edge.routing ?? edgeDefaults.routing
+          const strokeWidth = edge.strokeWidth ?? edgeDefaults.strokeWidth
+          const strokeStyle = edge.strokeStyle ?? edgeDefaults.strokeStyle
+          const startArrow = edge.startArrow ?? edgeDefaults.startArrow
+          const endArrow = edge.endArrow ?? edgeDefaults.endArrow
+
+          const path = buildEdgePath(ends.source, ends.target, routing)
           const selected = selectedEdgeIds.includes(edge.id)
 
           return (
@@ -88,10 +74,29 @@ export function DiagramEdges({
               }}
             >
               <path className="diagram-edge-hit" d={path} />
+              {/* Hover and selection read as a halo rather than a thicker
+                  line: the line's own colour is user data, so restyling it
+                  would be invisible on a recoloured edge, and thickening it
+                  would make selecting an edge change its apparent weight. */}
+              <path
+                className="diagram-edge-halo"
+                d={path}
+                strokeWidth={strokeWidth + 6}
+              />
               <path
                 className="diagram-edge-line"
                 d={path}
-                markerEnd="url(#diagram-arrowhead)"
+                // An unset colour follows the theme, which is why it is a class
+                // rather than an attribute; anything chosen is user data.
+                style={edge.strokeColor ? { stroke: edge.strokeColor } : undefined}
+                strokeWidth={strokeWidth}
+                strokeDasharray={strokeDashArray(strokeStyle, strokeWidth)}
+                markerStart={
+                  startArrow === 'arrow' ? 'url(#diagram-arrowhead)' : undefined
+                }
+                markerEnd={
+                  endArrow === 'arrow' ? 'url(#diagram-arrowhead)' : undefined
+                }
               />
             </g>
           )

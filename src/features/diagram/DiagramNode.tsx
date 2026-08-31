@@ -16,6 +16,8 @@ import {
   type FlowDiagramNode,
   useDiagramStore,
 } from '../../stores/diagram-store'
+import { penStyles, strokePathData } from '../../domain/freehand'
+import { specFor } from '../../domain/node-kinds'
 
 const architectureIcons = {
   client: Monitor,
@@ -32,13 +34,60 @@ const connectorPositions = [
   ['left', Position.Left],
 ] as const
 
-export function DiagramNode({ id, data, selected }: NodeProps<FlowDiagramNode>) {
-  const [editing, setEditing] = useState(data.kind === 'text' && selected)
+/**
+ * A freehand stroke. Its own node type in everything but name: no label, no
+ * fill, no connectors — just the path, scaled into whatever box the resize
+ * handles give it.
+ */
+function FreehandNode({ id, data, selected }: NodeProps<FlowDiagramNode>) {
+  const stroke = data.freehand
+  if (!stroke) return null
+  const pen = penStyles[stroke.pen]
+
+  return (
+    <div className="diagram-node diagram-node--freehand">
+      <NodeResizer
+        isVisible={selected}
+        minWidth={8}
+        minHeight={8}
+        lineClassName="node-resizer-line"
+        handleClassName="node-resizer-handle"
+      />
+      <svg
+        className="freehand-canvas"
+        viewBox={`0 0 ${data.width} ${data.height}`}
+        preserveAspectRatio="none"
+      >
+        <path
+          // The eraser hit-tests through elementsFromPoint and looks for this.
+          data-freehand-id={id}
+          d={strokePathData(stroke.points, data.width, data.height)}
+          fill="none"
+          stroke={data.strokeColor}
+          strokeWidth={data.strokeWidth * pen.widthScale}
+          strokeOpacity={pen.opacity}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ mixBlendMode: pen.blend }}
+        />
+      </svg>
+    </div>
+  )
+}
+
+export function DiagramNode(props: NodeProps<FlowDiagramNode>) {
+  if (props.data.kind === 'freehand') return <FreehandNode {...props} />
+  return <ShapeNode {...props} />
+}
+
+function ShapeNode({ id, data, selected }: NodeProps<FlowDiagramNode>) {
+  const spec = specFor(data.kind)
+  const [editing, setEditing] = useState(
+    (data.kind === 'text' || data.kind === 'stickyNote') && selected,
+  )
   const updateNodeLabel = useDiagramStore((state) => state.updateNodeLabel)
   const removeNode = useDiagramStore((state) => state.removeNode)
   const resizeTextNode = useDiagramStore((state) => state.resizeTextNode)
-  const clickConnector = useDiagramStore((state) => state.clickConnector)
-  const pendingConnector = useDiagramStore((state) => state.pendingConnector)
   const Icon =
     data.kind in architectureIcons
       ? architectureIcons[data.kind as keyof typeof architectureIcons]
@@ -47,7 +96,11 @@ export function DiagramNode({ id, data, selected }: NodeProps<FlowDiagramNode>) 
   return (
     <div
       className={`diagram-node diagram-node--${data.kind}`}
-      style={data.kind === 'text' ? { color: data.strokeColor } : undefined}
+      style={
+        data.kind === 'text' || data.kind === 'stickyNote'
+          ? { color: data.strokeColor }
+          : undefined
+      }
     >
       <NodeResizer
         isVisible={selected}
@@ -56,40 +109,57 @@ export function DiagramNode({ id, data, selected }: NodeProps<FlowDiagramNode>) 
         lineClassName="node-resizer-line"
         handleClassName="node-resizer-handle"
       />
+      {/* React Flow owns the connect interaction, including click-to-connect
+          and its own `connectingfrom`/`connectingto` state classes. */}
       {connectorPositions.map(([side, position]) => (
         <Handle
           key={side}
           id={side}
-          className={`connector-handle${
-            pendingConnector?.nodeId === id &&
-            pendingConnector.handleId === side
-              ? ' connector-handle--pending'
-              : ''
-          }`}
+          className="connector-handle"
           type="source"
           position={position}
           title={`Connect from ${side}`}
-          onClick={(event) => {
-            event.stopPropagation()
-            clickConnector(id, side)
-          }}
         />
       ))}
-      <div
-        className={`node-shape node-shape--${data.kind}`}
-        style={
-          // A text node has no outline — its stroke colour is the text colour.
-          // Leaving the border off here means the stylesheet needs no
-          // `!important` to undo it, so a text node can still carry a fill.
-          data.kind === 'text'
-            ? { backgroundColor: data.fillColor }
-            : {
-                backgroundColor: data.fillColor,
-                borderColor: data.strokeColor,
-                borderWidth: data.strokeWidth,
-              }
-        }
-      />
+      {spec.polygon ? (
+        // Clipping cuts a CSS border off, so the outline is a stroke-coloured
+        // plate with the fill inset on top of it.
+        <div
+          className={`node-shape node-shape--${data.kind}`}
+          style={{
+            backgroundColor: data.strokeColor,
+            clipPath: spec.polygon,
+          }}
+        >
+          <div
+            className="node-shape-fill"
+            style={{
+              backgroundColor: data.fillColor,
+              clipPath: spec.polygon,
+              inset: data.strokeWidth,
+            }}
+          />
+        </div>
+      ) : (
+        <div
+          className={`node-shape node-shape--${data.kind}`}
+          style={
+            // Outline-only kinds have no border of their own: for text and
+            // sticky notes the stroke colour is the *text* colour. A frame has
+            // neither — it is a boundary drawn entirely by the stylesheet, and
+            // setting a fill inline here would beat that.
+            spec.noFill
+              ? undefined
+              : spec.outlineOnly
+                ? { backgroundColor: data.fillColor }
+                : {
+                    backgroundColor: data.fillColor,
+                    borderColor: data.strokeColor,
+                    borderWidth: data.strokeWidth,
+                  }
+          }
+        />
+      )}
       <div className="node-content">
         {Icon && !editing ? (
           <Icon aria-hidden="true" size={22} strokeWidth={1.8} />
@@ -118,6 +188,8 @@ export function DiagramNode({ id, data, selected }: NodeProps<FlowDiagramNode>) 
               }
             }}
             onBlur={() => {
+              // An empty text box is a mis-click, not content. Sticky notes
+              // stay: an empty one is still a visible object you placed.
               if (data.kind === 'text' && !data.label.trim()) {
                 removeNode(id)
                 return
@@ -139,7 +211,10 @@ export function DiagramNode({ id, data, selected }: NodeProps<FlowDiagramNode>) 
             className="node-label"
             onDoubleClick={() => setEditing(true)}
           >
-            {data.label || 'Double-click to type'}
+            {data.label ||
+              (data.kind === 'stickyNote' || data.kind === 'text'
+                ? 'Double-click to type'
+                : '')}
           </span>
         )}
       </div>

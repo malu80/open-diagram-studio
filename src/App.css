@@ -33,7 +33,13 @@ textarea {
   --chrome-gap: var(--ds-space-15);
   --topbar-card-height: 48px;
   --pill-height: 40px;
+  /* One value drives the library's width, the rail's offset and the
+     animation, so they can never disagree. */
+  --library-width: 264px;
+  --rail-offset: 0px;
 }
+
+.studio-shell.library-open { --rail-offset: var(--library-width); }
 
 /* The shared card: this is what makes the chrome read as floating. */
 .chrome-card {
@@ -49,7 +55,8 @@ textarea {
 /* ========================== Top bar (two cards) ========================= */
 .topbar-identity {
   top: var(--chrome-inset);
-  left: var(--chrome-inset);
+  left: calc(var(--chrome-inset) + var(--rail-offset));
+  transition: left var(--ds-duration-base) var(--ds-ease-standard);
   gap: var(--ds-space-05);
   height: var(--topbar-card-height);
   padding: 0 var(--ds-space-1) 0 var(--ds-space-2);
@@ -106,18 +113,185 @@ textarea {
   padding: 0 var(--ds-space-1);
 }
 /* ============================== Tool rail =============================== */
-.tool-panel {
+/* The rail and its flyout travel together when the library docks. */
+.tool-rail-anchor {
+  position: absolute;
+  z-index: var(--ds-z-chrome);
   top: 50%;
-  left: var(--chrome-inset);
+  left: calc(var(--chrome-inset) + var(--rail-offset));
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  transform: translateY(-50%);
+  transition: left var(--ds-duration-base) var(--ds-ease-standard);
+}
+
+.tool-panel {
+  position: relative;
   flex-direction: column;
   padding: var(--ds-space-05);
-  /* Twelve tools are taller than a short window; scroll rather than overflow. */
+  /* More tools than a short window can hold; scroll rather than overflow. */
   max-height: calc(100vh - var(--chrome-inset) * 2);
   overflow-y: auto;
   scrollbar-width: none;
-  transform: translateY(-50%);
 }
 .tool-panel::-webkit-scrollbar { display: none; }
+
+/* Grid, not block: an inline-flex tooltip anchor inside a block sits on the
+   text baseline and picks up descender space, which pushed icons off centre. */
+.tool-slot {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+.tool-slot .ds-tooltip-anchor { position: relative; z-index: 1; }
+
+/* A corner notch marking the groups that open a flyout. Drawn on the slot
+   rather than as its own element, so it cannot affect layout at all. */
+.tool-slot--group::after {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  z-index: 2;
+  width: 0;
+  height: 0;
+  content: '';
+  border-top: 4px solid transparent;
+  border-right: 4px solid var(--ds-color-text-tertiary);
+  pointer-events: none;
+  transition: border-color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+.tool-slot--group[data-active='true']::after {
+  border-right-color: var(--ds-color-on-accent);
+}
+
+/* One pill that slides between tools, measured from the DOM. */
+.tool-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  background: var(--ds-color-accent);
+  border-radius: var(--ds-radius-md);
+  pointer-events: none;
+}
+.tool-indicator--animated {
+  transition: transform var(--ds-duration-base) var(--ds-ease-overshoot);
+}
+/* The pill supplies the fill, so the button must not paint its own. */
+.tool-grid .ds-icon-btn[data-active='true'] {
+  background: transparent;
+  color: var(--ds-color-on-accent);
+}
+
+/* ------------------------------ Flyout ------------------------------- */
+.tool-flyout {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ds-space-15);
+  width: 232px;
+  max-height: calc(100vh - var(--chrome-inset) * 2);
+  padding: var(--ds-space-2);
+  overflow-y: auto;
+  animation: flyout-in var(--ds-duration-fast) var(--ds-ease-standard) both;
+}
+
+@keyframes flyout-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.tool-flyout .ds-eyebrow { margin: 0; }
+.flyout-hint {
+  margin: 0;
+  color: var(--ds-color-text-secondary);
+  font-size: var(--ds-font-size-2xs);
+  line-height: var(--ds-line-height-relaxed);
+}
+
+.shape-grid,
+.pen-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ds-space-05);
+}
+
+.shape-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ds-space-05);
+  padding: var(--ds-space-1) var(--ds-space-05);
+  color: var(--ds-color-text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ds-radius-md);
+  cursor: pointer;
+  font-size: var(--ds-font-size-3xs);
+  text-align: center;
+  transition: var(--ds-transition-control);
+}
+.shape-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.shape-button:hover {
+  color: var(--ds-color-text);
+  background: var(--ds-color-surface-hover);
+}
+.shape-button--active {
+  color: var(--ds-color-text-accent);
+  background: var(--ds-color-accent-subtle);
+  border-color: var(--ds-color-accent-border);
+}
+
+/* -------------------------- Shape library ---------------------------- */
+.shape-library {
+  position: absolute;
+  z-index: var(--ds-z-chrome);
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  width: var(--library-width);
+  background: var(--ds-color-surface);
+  border-right: 1px solid var(--ds-color-border-subtle);
+  box-shadow: var(--ds-shadow-lg);
+  animation: library-in var(--ds-duration-base) var(--ds-ease-standard) both;
+}
+
+@keyframes library-in {
+  from { transform: translateX(-100%); }
+  to { transform: none; }
+}
+
+.shape-library-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--topbar-card-height);
+  padding: var(--ds-space-1) var(--ds-space-1) var(--ds-space-1) var(--ds-space-2);
+  border-bottom: 1px solid var(--ds-color-border-subtle);
+}
+.shape-library-header h2 {
+  margin: 0;
+  font-size: var(--ds-font-size-sm);
+  font-weight: var(--ds-font-weight-semibold);
+  letter-spacing: var(--ds-letter-spacing-tight);
+}
+.shape-library-body {
+  display: grid;
+  gap: var(--ds-space-3);
+  padding: var(--ds-space-2);
+}
+.shape-library-section { display: grid; gap: var(--ds-space-1); }
+.shape-library .shape-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 .tool-panel h2,
 .properties-panel h2 {
@@ -128,12 +302,25 @@ textarea {
 }
 
 /* Buttons here come from the design system (<IconButton size="lg">); this only
-   arranges them. */
-.tool-grid { display: grid; gap: var(--ds-space-025); }
+   arranges them. `justify-items: center` is what keeps every icon on the
+   rail's centre line regardless of what else a row contains. */
+.tool-grid {
+  /* The sliding indicator is measured against this element, so it has to be
+     the one the indicator is positioned against too. Without it the pill
+     resolved against .tool-panel and sat that panel's padding up and left. */
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: var(--ds-space-025);
+}
 
+/* A grid item in its own right. As a child of a slot it was an inline span,
+   so its height collapsed and it shared a line with the button. */
 .tool-divider {
+  display: block;
+  width: calc(100% - var(--ds-space-1));
   height: 1px;
-  margin: var(--ds-space-025) var(--ds-space-05);
+  margin: var(--ds-space-05) 0;
   background: var(--ds-color-border-subtle);
 }
 
@@ -217,6 +404,17 @@ textarea {
   line-height: var(--ds-line-height-relaxed);
 }
 
+/* The board arrives already laid out; fading it in stops that from reading as
+   a flash of content. */
+.canvas-wrap[data-hydrated='true'] .react-flow__viewport {
+  animation: board-in var(--ds-duration-slow) var(--ds-ease-decelerate) both;
+}
+
+@keyframes board-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .drawing-layer {
   position: absolute;
   z-index: var(--ds-z-canvas-overlay);
@@ -290,6 +488,74 @@ textarea {
   inset: 14.645%;
   transform: rotate(45deg);
 }
+
+/* A barrel reads as a datastore and, unlike the clipped shapes, can carry a
+   real CSS border. */
+.node-shape--cylinder { border-radius: 50% / 14%; }
+
+/* The inset fill that sits on a clipped shape's stroke-coloured plate. */
+.node-shape-fill {
+  position: absolute;
+  border-radius: inherit;
+}
+
+/* --- Sticky note: no outline, a soft lift, and room to write. --- */
+.node-shape--stickyNote {
+  border-width: 0;
+  border-radius: var(--ds-radius-xs);
+  box-shadow: var(--ds-shadow-sm);
+}
+.diagram-node--stickyNote {
+  font-size: var(--ds-font-size-md);
+  font-weight: var(--ds-font-weight-medium);
+  line-height: var(--ds-line-height-snug);
+}
+.diagram-node--stickyNote .node-content { inset: var(--ds-space-2); }
+.diagram-node--stickyNote .node-label { overflow-wrap: anywhere; }
+
+/* --- Frame: a labelled container that sits behind what it groups. --- */
+.node-shape--frame {
+  background: transparent;
+  border: 1px dashed var(--ds-color-border-strong);
+  border-radius: var(--ds-radius-md);
+  box-shadow: none;
+}
+.diagram-node--frame {
+  font-size: var(--ds-font-size-2xs);
+  font-weight: var(--ds-font-weight-semibold);
+}
+/* The title sits above the frame so it never covers the contents. */
+.diagram-node--frame .node-content {
+  inset: auto auto 100% 0;
+  justify-content: flex-start;
+  padding-bottom: var(--ds-space-05);
+}
+.diagram-node--frame .node-label { color: var(--ds-color-text-secondary); }
+
+/* The pen owns the cursor while it is active. */
+.drawing-layer--pen { cursor: crosshair; }
+
+.stroke-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* --- Freehand: the stroke is the whole node. --- */
+.diagram-node--freehand { pointer-events: none; }
+.freehand-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+/* Only the ink is clickable, not the stroke's bounding box. */
+.diagram-node--freehand .freehand-canvas path { pointer-events: stroke; }
 .node-shape--client,
 .node-shape--server,
 .node-shape--database,
@@ -360,8 +626,17 @@ textarea {
 .react-flow__node:hover .diagram-node .react-flow__handle,
 .selected .diagram-node .react-flow__handle { opacity: .55; }
 .diagram-node .react-flow__handle:hover { opacity: 1; }
-.diagram-node .react-flow__handle.clickconnecting,
-.diagram-node .react-flow__handle.connector-handle--pending {
+/* The dot stays 8px; what it accepts does not. Landing a connection drag
+   inside 8px is what made the Arrow tool feel broken. */
+.diagram-node .react-flow__handle::after {
+  position: absolute;
+  inset: -7px;
+  content: '';
+  border-radius: var(--ds-radius-full);
+}
+/* React Flow's own connect-state classes, now that it owns the interaction. */
+.diagram-node .react-flow__handle.connectingfrom,
+.diagram-node .react-flow__handle.connectingto {
   background: var(--ds-color-handle);
   box-shadow: 0 0 0 4px var(--ds-color-handle-ring);
   opacity: 1;
@@ -405,18 +680,24 @@ textarea {
 }
 .diagram-edge-line {
   fill: none;
+  /* An edge with no colour of its own follows the theme. Width, dash and
+     colour are all set per edge, so they must not be pinned here. */
   stroke: var(--ds-color-edge);
-  stroke-width: 2px;
   stroke-linecap: round;
   stroke-linejoin: round;
   pointer-events: none;
-  transition: stroke var(--ds-duration-fast) var(--ds-ease-standard);
 }
-.diagram-edge:hover .diagram-edge-line { stroke: var(--ds-color-accent); }
-.diagram-edge.selected .diagram-edge-line {
+.diagram-edge-halo {
+  fill: none;
   stroke: var(--ds-color-selection);
-  stroke-width: 3px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ds-duration-fast) var(--ds-ease-standard);
 }
+.diagram-edge:hover .diagram-edge-halo { opacity: .18; }
+.diagram-edge.selected .diagram-edge-halo { opacity: .32; }
 
 /* ============================== Inspector =============================== */
 .properties-panel {
@@ -437,7 +718,22 @@ textarea {
   scrollbar-color: var(--ds-color-border-strong) transparent;
   overscroll-behavior: contain;
 }
-.inspector-closed .properties-panel { display: none; }
+/* Kept mounted so it can animate. `visibility` is what takes it out of the
+   tab order, and it is delayed so it lands after the fade rather than during. */
+.properties-panel {
+  transform-origin: top right;
+  transition:
+    opacity var(--ds-duration-base) var(--ds-ease-standard),
+    transform var(--ds-duration-base) var(--ds-ease-standard),
+    visibility 0s linear 0s;
+}
+.properties-panel[data-state='closed'] {
+  opacity: 0;
+  transform: translateX(var(--ds-space-1)) scale(0.98);
+  visibility: hidden;
+  pointer-events: none;
+  transition-delay: 0s, 0s, var(--ds-duration-base);
+}
 
 .panel-heading {
   display: flex;
@@ -491,23 +787,38 @@ textarea {
   display: flex;
   align-items: center;
   gap: var(--ds-space-05);
+  width: 100%;
   padding: var(--ds-space-15) var(--ds-space-2);
   color: var(--ds-color-text-tertiary);
+  background: transparent;
+  border: 0;
   cursor: pointer;
   font-size: var(--ds-font-size-3xs);
   font-weight: var(--ds-font-weight-semibold);
   letter-spacing: var(--ds-letter-spacing-caps);
   text-transform: uppercase;
-  list-style: none;
+  text-align: left;
   transition: var(--ds-transition-control);
 }
-.interaction-log-summary::-webkit-details-marker { display: none; }
 .interaction-log-summary:hover { color: var(--ds-color-text-secondary); }
+
+/* 0fr → 1fr is the one way to transition to a content-sized height. */
+.interaction-log-region {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--ds-duration-base) var(--ds-ease-standard);
+}
+.interaction-log[data-state='open'] .interaction-log-region {
+  grid-template-rows: 1fr;
+}
+.interaction-log-content { overflow: hidden; }
 .interaction-log-chevron {
   flex: none;
   transition: transform var(--ds-duration-fast) var(--ds-ease-standard);
 }
-.interaction-log[open] .interaction-log-chevron { transform: rotate(90deg); }
+.interaction-log[data-state='open'] .interaction-log-chevron {
+  transform: rotate(90deg);
+}
 .interaction-log-count {
   margin-left: auto;
   padding: 0 var(--ds-space-05);
@@ -565,7 +876,8 @@ textarea {
 
 /* ============================== Status bar ============================== */
 .statusbar {
-  left: var(--chrome-inset);
+  left: calc(var(--chrome-inset) + var(--rail-offset));
+  transition: left var(--ds-duration-base) var(--ds-ease-standard);
   bottom: var(--chrome-inset);
   gap: var(--ds-space-2);
   height: var(--pill-height);

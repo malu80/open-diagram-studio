@@ -53,14 +53,13 @@ describe('selection commands', () => {
     expect(useDiagramStore.getState().selectedEdgeIds).toEqual(['e1'])
   })
 
-  it('clears the selection and any pending connector', () => {
+  it('clears the selection', () => {
     reset([makeNode('a')], [], ['a'])
-    useDiagramStore.setState({ pendingConnector: { nodeId: 'a', handleId: 'top' } })
 
     useDiagramStore.getState().clearSelection()
 
     expect(useDiagramStore.getState().selectedNodeIds).toEqual([])
-    expect(useDiagramStore.getState().pendingConnector).toBeNull()
+    expect(useDiagramStore.getState().selectedEdgeIds).toEqual([])
   })
 
   it('leaves state untouched when there is nothing to clear', () => {
@@ -171,5 +170,40 @@ describe('copy and paste', () => {
     useDiagramStore.getState().pasteClipboard()
 
     expect(useDiagramStore.getState()).toBe(before)
+  })
+})
+
+describe('edge styling', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
+  })
+
+  it('applies a patch to every selected edge only', () => {
+    reset([makeNode('a'), makeNode('b')], [
+      makeEdge('e1', 'a', 'b'),
+      makeEdge('e2', 'b', 'a'),
+    ])
+    useDiagramStore.setState({ selectedEdgeIds: ['e1'] })
+
+    useDiagramStore.getState().updateSelectedEdge({
+      routing: 'elbow',
+      strokeWidth: 4,
+    })
+
+    const [first, second] = useDiagramStore.getState().edges
+    expect(first).toMatchObject({ routing: 'elbow', strokeWidth: 4 })
+    expect(second.routing).toBeUndefined()
+    expect(second.strokeWidth).toBeUndefined()
+  })
+
+  it('clears a colour back to the theme default', () => {
+    reset([makeNode('a'), makeNode('b')], [makeEdge('e1', 'a', 'b')])
+    useDiagramStore.setState({ selectedEdgeIds: ['e1'] })
+
+    useDiagramStore.getState().updateSelectedEdge({ strokeColor: '#2f4ae6' })
+    expect(useDiagramStore.getState().edges[0].strokeColor).toBe('#2f4ae6')
+
+    useDiagramStore.getState().updateSelectedEdge({ strokeColor: undefined })
+    expect(useDiagramStore.getState().edges[0].strokeColor).toBeUndefined()
   })
 })

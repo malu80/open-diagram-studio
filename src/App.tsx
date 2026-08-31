@@ -18,26 +18,16 @@ import {
 import '@xyflow/react/dist/style.css'
 import {
   AlignCenterHorizontal,
-  Box,
   ChevronRight,
-  ArrowUpRight,
-  Circle,
   Cloud,
-  Database,
-  Diamond,
   Download,
   Keyboard,
   Monitor,
   Moon,
-  MousePointer2,
   PanelRight,
-  RectangleHorizontal,
   Scan,
-  Server,
   Sun,
   Trash2,
-  Type,
-  Waypoints,
   X,
   ZoomIn,
   ZoomOut,
@@ -51,6 +41,8 @@ import {
   Field,
   IconButton,
   RangeInput,
+  SegmentedControl,
+  Spinner,
   SwatchPicker,
   TextInput,
   duration,
@@ -63,9 +55,27 @@ import {
   type ShortcutBinding,
 } from './features/shortcuts/use-shortcuts'
 import { ShortcutsDialog } from './features/shortcuts/ShortcutsDialog'
+import { ToolRail } from './features/toolbar/ToolRail'
+import { ShapeLibrary } from './features/toolbar/ShapeLibrary'
+import {
+  canvasModeFor,
+  ownsCanvasDrag,
+  SELECT_TOOL,
+  useToolStore,
+  type Tool as ActiveTool,
+} from './stores/tool-store'
+import { specFor } from './domain/node-kinds'
 import { diagramRepository } from './data/diagram-repository'
-import type { DiagramDocument, DiagramNodeKind } from './domain/diagram'
+import { edgeDefaults, type DiagramDocument } from './domain/diagram'
 import { resolveDrawRect, shouldConstrain } from './domain/drawing'
+import {
+  appendPoint,
+  normaliseStroke,
+  penStyles,
+  strokeBounds,
+  strokePathData,
+} from './domain/freehand'
+import type { StrokePoint } from './domain/diagram'
 import { DiagramEdges } from './features/diagram/DiagramEdges'
 import { DiagramNode } from './features/diagram/DiagramNode'
 import {
@@ -77,12 +87,6 @@ import { applyTheme, useUiStore, type ThemePreference } from './stores/ui-store'
 
 const reportFlowError = (code: string, message: string) => {
   console.error(`React Flow ${code}: ${message}`)
-}
-type Tool = {
-  kind: DiagramNodeKind
-  label: string
-  icon: LucideIcon
-  shortcut?: string
 }
 type DrawDraft = {
   startX: number
@@ -110,34 +114,12 @@ const themeNames: Record<ThemePreference, string> = {
   system: 'system',
 }
 const EXPORT_TIMEOUT_MS = 5000
+/** How close a connection drag has to get before it snaps to a handle. */
+const CONNECT_RADIUS = 28
+const SELECT_RADIUS = 20
 const MIN_ZOOM = 0.05
 const MAX_ZOOM = 8
 const ZOOM_STEP = 1.2
-
-const shapeTools: Tool[] = [
-  { kind: 'text', label: 'Text', icon: Type, shortcut: 'T' },
-  {
-    kind: 'rectangle',
-    label: 'Rectangle',
-    icon: RectangleHorizontal,
-    shortcut: 'R',
-  },
-  { kind: 'roundedRectangle', label: 'Rounded', icon: Box },
-  { kind: 'ellipse', label: 'Ellipse', icon: Circle, shortcut: 'O' },
-  { kind: 'diamond', label: 'Decision', icon: Diamond, shortcut: 'D' },
-]
-
-/** The domain has always supported these; until now nothing created them. */
-const architectureTools: Tool[] = [
-  { kind: 'client', label: 'Client', icon: Monitor },
-  { kind: 'server', label: 'Server', icon: Server },
-  { kind: 'database', label: 'Database', icon: Database },
-  { kind: 'queue', label: 'Queue', icon: Waypoints },
-  { kind: 'cloud', label: 'Cloud', icon: Cloud },
-]
-
-/** Every tool that draws by dragging — used to name the active one. */
-const drawTools: Tool[] = [...shapeTools, ...architectureTools]
 
 function makeDocument(
   title: string,
@@ -166,12 +148,12 @@ function App() {
   const hydrate = useDiagramStore((state) => state.hydrate)
   const setSaveState = useDiagramStore((state) => state.setSaveState)
   const setTitle = useDiagramStore((state) => state.setTitle)
-  const addNode = useDiagramStore((state) => state.addNode)
+  const addLine = useDiagramStore((state) => state.addLine)
+  const addFreehandNode = useDiagramStore((state) => state.addFreehandNode)
+  const eraseNodes = useDiagramStore((state) => state.eraseNodes)
   const drawNode = useDiagramStore((state) => state.drawNode)
   const onNodesChange = useDiagramStore((state) => state.onNodesChange)
-  const onEdgesChange = useDiagramStore((state) => state.onEdgesChange)
   const connect = useDiagramStore((state) => state.connect)
-  const cancelConnector = useDiagramStore((state) => state.cancelConnector)
   const logInteraction = useDiagramStore((state) => state.logInteraction)
   const clearInteractionLog = useDiagramStore(
     (state) => state.clearInteractionLog,
@@ -187,15 +169,86 @@ function App() {
   const updateSelectedNode = useDiagramStore(
     (state) => state.updateSelectedNode,
   )
+  const updateSelectedEdge = useDiagramStore(
+    (state) => state.updateSelectedEdge,
+  )
   const theme = useUiStore((state) => state.theme)
   const cycleTheme = useUiStore((state) => state.cycleTheme)
-  const flowInstance = useRef<ReactFlowInstance<FlowDiagramNode> | null>(null)
-  const [activeShape, setActiveShape] = useState<DiagramNodeKind | null>(null)
-  const [arrowActive, setArrowActive] = useState(false)
+  // `never` for the edge type: edges are rendered by DiagramEdges, and React
+  // Flow is deliberately given none.
+  const flowInstance = useRef<ReactFlowInstance<
+    FlowDiagramNode,
+    never
+  > | null>(null)
+  const tool = useToolStore((state) => state.tool)
+  const setTool = useToolStore((state) => state.setTool)
+  const resetTool = useToolStore((state) => state.resetTool)
+  const libraryOpen = useToolStore((state) => state.libraryOpen)
+  const penColor = useToolStore((state) => state.penColor)
+  const penWidth = useToolStore((state) => state.penWidth)
+  const stickyColor = useToolStore((state) => state.stickyColor)
+  /** The node kind a shape tool is about to draw, if any. */
+  const activeShape = tool.kind === 'shape' ? tool.shape : null
+
+  /** What the status bar says the current tool wants you to do. */
+  const toolHint = (() => {
+    switch (tool.kind) {
+      case 'shape':
+        return `${specFor(tool.shape).label || 'Text'}: drag on the canvas`
+      case 'line':
+        return 'Line: drag on the canvas'
+      case 'connector':
+        return 'Connector: drag from one node handle to another'
+      case 'pen':
+        return tool.pen === 'eraser'
+          ? 'Eraser: drag across strokes to remove them'
+          : 'Draw: drag on the canvas'
+      default:
+        return null
+    }
+  })()
   const [drawDraft, setDrawDraft] = useState<DrawDraft | null>(null)
+  /** Points of the stroke being drawn, in layer-local screen pixels. */
+  const [strokePoints, setStrokePoints] = useState<StrokePoint[] | null>(null)
+  const erasedRef = useRef<Set<string>>(new Set())
+
+  /**
+   * The stroke in progress, resolved once per render. The path is built from
+   * normalised points inside their own box and then translated into place, so
+   * the preview and the committed node go through identical maths.
+   */
+  const strokePreview = (() => {
+    if (!strokePoints || strokePoints.length === 0 || tool.kind !== 'pen') {
+      return null
+    }
+    const bounds = strokeBounds(strokePoints, penWidth)
+    const pen = penStyles[tool.pen === 'eraser' ? 'pen' : tool.pen]
+    return {
+      bounds,
+      pen,
+      d: strokePathData(
+        normaliseStroke(strokePoints, bounds),
+        bounds.width,
+        bounds.height,
+      ),
+    }
+  })()
   const [zoom, setZoom] = useState(1)
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const lastShape = useToolStore((state) => state.lastShape)
+  const lastArchitecture = useToolStore((state) => state.lastArchitecture)
+  const lastPen = useToolStore((state) => state.lastPen)
+  const lineRouting = useToolStore((state) => state.lineRouting)
+  const lineArrow = useToolStore((state) => state.lineArrow)
+  const [activityOpen, setActivityOpen] = useState(false)
+
+  /**
+   * What the pointer does on the canvas right now, derived from the one tool
+   * state machine. Every React Flow interaction prop reads from this, so a
+   * tool cannot look active without behaving that way.
+   */
+  const canvasMode = canvasModeFor(tool)
 
   const changeZoom = useCallback((factor: number) => {
     const instance = flowInstance.current
@@ -213,6 +266,17 @@ function App() {
   )
   const selectedNode = nodes.find((node) => selectedNodeIds.includes(node.id))
   const selectedEdge = edges.find((edge) => selectedEdgeIds.includes(edge.id))
+  /** The two arrowheads read better as one four-way choice than two toggles. */
+  const startArrow = selectedEdge?.startArrow ?? edgeDefaults.startArrow
+  const endArrow = selectedEdge?.endArrow ?? edgeDefaults.endArrow
+  const arrowEnds =
+    startArrow === 'arrow' && endArrow === 'arrow'
+      ? 'both'
+      : startArrow === 'arrow'
+        ? 'start'
+        : endArrow === 'arrow'
+          ? 'end'
+          : 'none'
   const onNodeClick = useCallback(
     (event: React.MouseEvent, node: FlowDiagramNode) => {
       const nextNodeIds = event.shiftKey
@@ -225,9 +289,10 @@ function App() {
   const onConnect = useCallback(
     (connection: Parameters<typeof connect>[0]) => {
       connect(connection)
-      setArrowActive(false)
+      // One connector per press, like every other drawing tool.
+      resetTool()
     },
-    [connect],
+    [connect, resetTool],
   )
 
   useEffect(() => {
@@ -255,32 +320,19 @@ function App() {
     return () => window.clearTimeout(timeout)
   }, [edges, hydrated, nodes, setSaveState, title])
 
-  /** Picks a drawing tool outright — what a keyboard shortcut should do. */
-  const pickShape = useCallback((kind: DiagramNodeKind | null) => {
-    setArrowActive(false)
-    setDrawDraft(null)
-    setActiveShape(kind)
-  }, [])
-
-  /** Clicking the active tool again returns to Select. */
-  const toggleShape = useCallback((kind: DiagramNodeKind) => {
-    setArrowActive(false)
-    setDrawDraft(null)
-    setActiveShape((current) => (current === kind ? null : kind))
-  }, [])
-
-  const pickArrow = useCallback(() => {
-    setActiveShape(null)
-    setDrawDraft(null)
-    setArrowActive(true)
-  }, [])
+  /** Picks a tool outright — what a keyboard shortcut should do. */
+  const pickTool = useCallback(
+    (next: ActiveTool) => {
+      setDrawDraft(null)
+      setTool(next)
+    },
+    [setTool],
+  )
 
   const resetTools = useCallback(() => {
-    setActiveShape(null)
-    setArrowActive(false)
     setDrawDraft(null)
-    cancelConnector()
-  }, [cancelConnector])
+    resetTool()
+  }, [resetTool])
 
   /** Escape unwinds one layer at a time: dialog, then tool, then selection. */
   const escape = useCallback(() => {
@@ -315,27 +367,61 @@ function App() {
    *  can never describe a binding the app does not actually have. */
   const bindings: ShortcutBinding[] = [
     // Tools
-    { key: 'v', run: () => pickShape(null), title: 'Select', group: 'Tools' },
-    { key: 't', run: () => pickShape('text'), title: 'Text', group: 'Tools' },
+    {
+      key: 'v',
+      run: () => pickTool(SELECT_TOOL),
+      title: 'Select',
+      group: 'Tools',
+    },
     {
       key: 'r',
-      run: () => pickShape('rectangle'),
-      title: 'Rectangle',
+      run: () => pickTool({ kind: 'shape', shape: lastShape }),
+      title: 'Shapes',
       group: 'Tools',
     },
     {
-      key: 'o',
-      run: () => pickShape('ellipse'),
-      title: 'Ellipse',
+      key: 'l',
+      run: () =>
+        pickTool({ kind: 'line', routing: lineRouting, endArrow: lineArrow }),
+      title: 'Lines',
       group: 'Tools',
     },
     {
-      key: 'd',
-      run: () => pickShape('diamond'),
-      title: 'Decision',
+      key: 'a',
+      run: () => pickTool({ kind: 'connector' }),
+      title: 'Connector',
       group: 'Tools',
     },
-    { key: 'a', run: pickArrow, title: 'Arrow', group: 'Tools' },
+    {
+      key: 'n',
+      run: () => pickTool({ kind: 'shape', shape: 'stickyNote' }),
+      title: 'Sticky note',
+      group: 'Tools',
+    },
+    {
+      key: 'f',
+      run: () => pickTool({ kind: 'shape', shape: 'frame' }),
+      title: 'Frame',
+      group: 'Tools',
+    },
+    {
+      key: 't',
+      run: () => pickTool({ kind: 'shape', shape: 'text' }),
+      title: 'Text',
+      group: 'Tools',
+    },
+    {
+      key: 'p',
+      run: () => pickTool({ kind: 'pen', pen: lastPen }),
+      title: 'Draw',
+      group: 'Tools',
+    },
+    {
+      key: 'i',
+      run: () => pickTool({ kind: 'shape', shape: lastArchitecture }),
+      title: 'Architecture',
+      group: 'Tools',
+    },
 
     // Edit
     {
@@ -415,9 +501,8 @@ function App() {
       group: 'View',
     },
     {
-      key: 'p',
+      key: '\\',
       mod: true,
-      shift: true,
       run: () => setInspectorOpen((open) => !open),
       title: 'Toggle properties panel',
       group: 'View',
@@ -519,7 +604,159 @@ function App() {
     }
   }
 
+  /** Layer-local pixels, which is what both the preview and the maths use. */
+  const layerPoint = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ): StrokePoint => {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    return { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
+  }
+
+  /**
+   * Removes any stroke under the pointer.
+   *
+   * `elementsFromPoint` rather than `elementFromPoint`: the drawing layer sits
+   * on top and would always be the topmost hit, so the whole stack has to be
+   * searched for ink underneath it.
+   */
+  const eraseAt = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const hits = window.document
+      .elementsFromPoint(event.clientX, event.clientY)
+      .map((element) => element.getAttribute('data-freehand-id'))
+      .filter((id): id is string => Boolean(id))
+    hits.forEach((id) => erasedRef.current.add(id))
+  }
+
+  const beginPenStroke = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId)
+    if (tool.kind === 'pen' && tool.pen === 'eraser') {
+      erasedRef.current = new Set()
+      eraseAt(event)
+      return
+    }
+    setStrokePoints([layerPoint(event)])
+  }
+
+  const continuePenStroke = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (tool.kind !== 'pen') return
+    if (tool.pen === 'eraser') {
+      if (event.buttons === 0) return
+      eraseAt(event)
+      return
+    }
+    // Read the position now, not inside the updater: React nulls
+    // `event.currentTarget` once the handler returns, and a state updater runs
+    // later than that.
+    const point = layerPoint(event)
+    setStrokePoints((points) => (points ? appendPoint(points, point) : points))
+  }
+
+  const finishPenStroke = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    if (tool.kind !== 'pen') return
+
+    if (tool.pen === 'eraser') {
+      eraseNodes([...erasedRef.current])
+      erasedRef.current = new Set()
+      return
+    }
+
+    const points = strokePoints
+    setStrokePoints(null)
+    if (!points || points.length === 0 || !flowInstance.current) return
+
+    const bounds = strokeBounds(points, penWidth)
+    const layerBounds = event.currentTarget.getBoundingClientRect()
+    const topLeft = flowInstance.current.screenToFlowPosition({
+      x: layerBounds.left + bounds.x,
+      y: layerBounds.top + bounds.y,
+    })
+    const bottomRight = flowInstance.current.screenToFlowPosition({
+      x: layerBounds.left + bounds.x + bounds.width,
+      y: layerBounds.top + bounds.y + bounds.height,
+    })
+
+    addFreehandNode({
+      pen: tool.pen,
+      // Normalised, so the numbers are the same in screen or board space and
+      // the stroke scales with the resize handles.
+      points: normaliseStroke(points, bounds),
+      x: topLeft.x,
+      y: topLeft.y,
+      width: Math.max(1, bottomRight.x - topLeft.x),
+      height: Math.max(1, bottomRight.y - topLeft.y),
+      color: penColor,
+      // Stored in board units so the stroke keeps the weight it was drawn at.
+      strokeWidth: penWidth / (flowInstance.current.getZoom() || 1),
+    })
+  }
+
+  /** The node under a point, if a line end was dropped on one. */
+  const nodeAt = (clientX: number, clientY: number): string | undefined => {
+    const node = window.document
+      .elementsFromPoint(clientX, clientY)
+      .map((element) => element.closest('.react-flow__node'))
+      .find(Boolean)
+    return node?.getAttribute('data-id') ?? undefined
+  }
+
+  const finishLine = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    const draft = drawDraft
+    const layerBounds = event.currentTarget.getBoundingClientRect()
+    const endX = event.clientX
+    const endY = event.clientY
+    setDrawDraft(null)
+    if (tool.kind !== 'line' || !draft || !flowInstance.current) return
+
+    const startX = layerBounds.left + draft.startX
+    const startY = layerBounds.top + draft.startY
+    const from = flowInstance.current.screenToFlowPosition({
+      x: startX,
+      y: startY,
+    })
+    const to = flowInstance.current.screenToFlowPosition({ x: endX, y: endY })
+
+    // Too short to be a deliberate line; treat it as a mis-click.
+    if (Math.hypot(to.x - from.x, to.y - from.y) < 12) {
+      resetTool()
+      return
+    }
+
+    addLine({
+      from,
+      to,
+      fromNodeId: nodeAt(startX, startY),
+      toNodeId: nodeAt(endX, endY),
+      routing: tool.routing,
+      endArrow: tool.endArrow,
+    })
+    resetTool()
+  }
+
   const beginDrawing = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (tool.kind === 'pen') {
+      beginPenStroke(event)
+      return
+    }
+    if (tool.kind === 'line') {
+      event.currentTarget.setPointerCapture(event.pointerId)
+      const bounds = event.currentTarget.getBoundingClientRect()
+      const x = event.clientX - bounds.left
+      const y = event.clientY - bounds.top
+      setDrawDraft({
+        startX: x,
+        startY: y,
+        currentX: x,
+        currentY: y,
+        constrain: false,
+      })
+      return
+    }
     if (!activeShape) return
     // Capture the pointer: the chrome floats over the canvas, so without this
     // a drag that ends over the inspector or the tool rail never delivers its
@@ -538,6 +775,19 @@ function App() {
   }
 
   const continueDrawing = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (tool.kind === 'pen') {
+      continuePenStroke(event)
+      return
+    }
+    if (tool.kind === 'line') {
+      const bounds = event.currentTarget.getBoundingClientRect()
+      const x = event.clientX - bounds.left
+      const y = event.clientY - bounds.top
+      setDrawDraft((draft) =>
+        draft ? { ...draft, currentX: x, currentY: y } : null,
+      )
+      return
+    }
     if (!drawDraft || !activeShape) return
     const bounds = event.currentTarget.getBoundingClientRect()
     setDrawDraft((draft) =>
@@ -553,6 +803,14 @@ function App() {
   }
 
   const finishDrawing = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (tool.kind === 'pen') {
+      finishPenStroke(event)
+      return
+    }
+    if (tool.kind === 'line') {
+      finishLine(event)
+      return
+    }
     if (!activeShape || !drawDraft || !flowInstance.current) return
     const bounds = event.currentTarget.getBoundingClientRect()
 
@@ -592,11 +850,16 @@ function App() {
       wasClick ? defaultWidth : Math.max(44, draggedWidth),
       wasClick ? defaultHeight : Math.max(44, draggedHeight),
     )
+    // Sticky notes take the colour chosen in the flyout rather than the
+    // generic node default.
+    if (activeShape === 'stickyNote') {
+      updateSelectedNode({ fillColor: stickyColor })
+    }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
     setDrawDraft(null)
-    setActiveShape(null)
+    resetTool()
   }
 
   /** Position and size are editable, not just displayed. */
@@ -623,24 +886,11 @@ function App() {
     logInteraction('Text box created from canvas double-click')
   }
 
-  const renderTools = (tools: Tool[], drawable = false) =>
-    tools.map(({ kind, label, icon: Icon, shortcut }) => (
-      <IconButton
-        key={kind}
-        size="lg"
-        label={drawable ? `Draw ${label}` : `Add ${label}`}
-        shortcut={shortcut}
-        tooltipPlacement="right"
-        icon={<Icon size={20} />}
-        active={activeShape === kind}
-        aria-pressed={drawable ? activeShape === kind : undefined}
-        onClick={() => (drawable ? toggleShape(kind) : addNode(kind))}
-      />
-    ))
-
   return (
     <main
-      className={`ds-root studio-shell${inspectorOpen ? '' : ' inspector-closed'}`}
+      className={`ds-root studio-shell${inspectorOpen ? '' : ' inspector-closed'}${
+        libraryOpen ? ' library-open' : ''
+      }`}
     >
       <header className="chrome-card topbar-identity">
         <strong className="brand-copy">Diagram Studio</strong>
@@ -700,41 +950,20 @@ function App() {
         ) : null}
       </div>
 
-      <aside className="chrome-card tool-panel" aria-label="Diagram tools">
-        <div className="tool-grid">
-          <IconButton
-            size="lg"
-            label="Select"
-            shortcut="V"
-            tooltipPlacement="right"
-            icon={<MousePointer2 size={18} />}
-            active={!activeShape && !arrowActive}
-            aria-pressed={!activeShape && !arrowActive}
-            onClick={resetTools}
-          />
-          {renderTools(shapeTools, true)}
-          <IconButton
-            size="lg"
-            label="Draw arrow"
-            shortcut="A"
-            tooltipPlacement="right"
-            icon={<ArrowUpRight size={20} />}
-            active={arrowActive}
-            aria-pressed={arrowActive}
-            onClick={() => (arrowActive ? resetTools() : pickArrow())}
-          />
-          <span className="tool-divider" aria-hidden="true" />
-          {renderTools(architectureTools, true)}
-        </div>
-      </aside>
+      <ToolRail />
+      <ShapeLibrary />
 
       <section
-        className={`canvas-wrap${arrowActive ? ' connecting' : ''}`}
+        className={`canvas-wrap${canvasMode === 'connect' ? ' connecting' : ''}`}
         aria-label="Diagram canvas"
+        data-hydrated={hydrated}
         onDoubleClick={createTextAtCursor}
       >
         {!hydrated ? (
-          <div className="loading-state">Loading local diagram...</div>
+          <div className="loading-state">
+            <Spinner size={22} label="Loading your board" />
+            <span>Loading your board</span>
+          </div>
         ) : null}
         <ReactFlow
           nodes={flowNodes}
@@ -747,7 +976,6 @@ function App() {
           onMove={(_, viewport) => setZoom(viewport.zoom)}
           onNodesChange={onNodesChange}
           onNodeClick={onNodeClick}
-          onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onError={reportFlowError}
           fitView
@@ -756,11 +984,18 @@ function App() {
           fitViewOptions={{ maxZoom: 1 }}
           deleteKeyCode={null}
           connectionMode={ConnectionMode.Loose}
-          connectOnClick={false}
-          nodesConnectable
+          // Click one handle then another, rather than only drag-to-connect.
+          connectOnClick={canvasMode === 'connect'}
+          connectionRadius={
+            canvasMode === 'connect' ? CONNECT_RADIUS : SELECT_RADIUS
+          }
+          nodesConnectable={canvasMode !== 'draw'}
+          // A drag must not move a node or draw a marquee while a tool that
+          // owns the drag is active.
+          nodesDraggable={canvasMode === 'select'}
           edgesFocusable
           edgesReconnectable={false}
-          selectionOnDrag
+          selectionOnDrag={canvasMode === 'select'}
           selectionMode={SelectionMode.Partial}
           multiSelectionKeyCode="Shift"
           panOnDrag={[1, 2]}
@@ -819,16 +1054,24 @@ function App() {
             }
           />
         </div>
-        {activeShape ? (
+        {ownsCanvasDrag(tool) ? (
           <div
-            className="drawing-layer"
+            className={`drawing-layer${
+              tool.kind === 'pen' ? ' drawing-layer--pen' : ''
+            }`}
             onPointerDown={beginDrawing}
             onPointerMove={continueDrawing}
             onPointerUp={finishDrawing}
-            onPointerCancel={() => setDrawDraft(null)}
-            onLostPointerCapture={() => setDrawDraft(null)}
+            onPointerCancel={() => {
+              setDrawDraft(null)
+              setStrokePoints(null)
+            }}
+            onLostPointerCapture={() => {
+              setDrawDraft(null)
+              setStrokePoints(null)
+            }}
           >
-            {drawDraft ? (
+            {drawDraft && activeShape ? (
               <div
                 className={`draw-preview draw-preview--${activeShape}`}
                 style={resolveDrawRect(
@@ -840,9 +1083,42 @@ function App() {
                 )}
               />
             ) : null}
+
+            {/* The stroke in progress, drawn straight in layer pixels so it
+                tracks the pointer exactly rather than round-tripping through
+                board coordinates on every sample. */}
+            {drawDraft && tool.kind === 'line' ? (
+              <svg className="stroke-preview" aria-hidden="true">
+                <line
+                  x1={drawDraft.startX}
+                  y1={drawDraft.startY}
+                  x2={drawDraft.currentX}
+                  y2={drawDraft.currentY}
+                  stroke="var(--ds-color-selection)"
+                  strokeWidth={2}
+                  strokeDasharray="6 4"
+                  strokeLinecap="round"
+                />
+              </svg>
+            ) : null}
+
+            {strokePreview ? (
+              <svg className="stroke-preview" aria-hidden="true">
+                <path
+                  d={strokePreview.d}
+                  transform={`translate(${strokePreview.bounds.x} ${strokePreview.bounds.y})`}
+                  fill="none"
+                  stroke={penColor}
+                  strokeWidth={penWidth * strokePreview.pen.widthScale}
+                  strokeOpacity={strokePreview.pen.opacity}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            ) : null}
           </div>
         ) : null}
-        {nodes.length === 0 && hydrated ? (
+        {nodes.length === 0 && edges.length === 0 && hydrated ? (
           <div className="empty-canvas">
             <strong>Draw your first shape</strong>
             <span>Choose a shape on the left, then drag on the canvas.</span>
@@ -850,14 +1126,17 @@ function App() {
         ) : null}
       </section>
 
-      <aside className="chrome-card properties-panel">
+      <aside
+        className="chrome-card properties-panel"
+        data-state={inspectorOpen ? 'open' : 'closed'}
+      >
         <div className="panel-heading">
           <div>
             <h2>
               {selectedNode
                 ? 'Node properties'
                 : selectedEdge
-                  ? 'Arrow selected'
+                  ? 'Arrow properties'
                   : 'Nothing selected'}
             </h2>
           </div>
@@ -1010,16 +1289,112 @@ function App() {
             ) : null}
           </div>
         ) : selectedEdge ? (
-          <p className="panel-hint">
-            Use the delete button or press Delete to remove this arrow.
-          </p>
+          <div className="property-fields">
+            <div className="property-section-title"><span>Route</span></div>
+            <SegmentedControl
+              label="Line routing"
+              value={selectedEdge.routing ?? edgeDefaults.routing}
+              options={[
+                { value: 'curved', label: 'Curved' },
+                { value: 'straight', label: 'Straight' },
+                { value: 'elbow', label: 'Elbow' },
+              ]}
+              onChange={(routing) => updateSelectedEdge({ routing })}
+            />
+
+            <SegmentedControl
+              label="Arrowheads"
+              value={arrowEnds}
+              options={[
+                { value: 'end', label: 'End' },
+                { value: 'start', label: 'Start' },
+                { value: 'both', label: 'Both' },
+                { value: 'none', label: 'None' },
+              ]}
+              onChange={(ends) =>
+                updateSelectedEdge({
+                  startArrow:
+                    ends === 'start' || ends === 'both' ? 'arrow' : 'none',
+                  endArrow: ends === 'end' || ends === 'both' ? 'arrow' : 'none',
+                })
+              }
+            />
+
+            <div className="property-section-title"><span>Appearance</span></div>
+            <SegmentedControl
+              label="Line style"
+              value={selectedEdge.strokeStyle ?? edgeDefaults.strokeStyle}
+              options={[
+                { value: 'solid', label: 'Solid' },
+                { value: 'dashed', label: 'Dashed' },
+                { value: 'dotted', label: 'Dotted' },
+              ]}
+              onChange={(strokeStyle) => updateSelectedEdge({ strokeStyle })}
+            />
+
+            <Field label="Colour">
+              <SwatchPicker
+                label="Line colour presets"
+                value={selectedEdge.strokeColor ?? ''}
+                options={strokeSwatches}
+                onSelect={(strokeColor) => updateSelectedEdge({ strokeColor })}
+              />
+              <ColorInput
+                aria-label="Custom line colour"
+                value={selectedEdge.strokeColor ?? '#5c6478'}
+                onChange={(event) =>
+                  updateSelectedEdge({ strokeColor: event.target.value })
+                }
+              />
+              {selectedEdge.strokeColor ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  block
+                  onClick={() => updateSelectedEdge({ strokeColor: undefined })}
+                >
+                  Follow the theme
+                </Button>
+              ) : null}
+            </Field>
+
+            <Field
+              htmlFor="edge-stroke-width"
+              label={
+                <span className="field-label-row">
+                  Thickness
+                  <span className="field-value ds-numeric">
+                    {selectedEdge.strokeWidth ?? edgeDefaults.strokeWidth}
+                  </span>
+                </span>
+              }
+            >
+              <RangeInput
+                id="edge-stroke-width"
+                min={1}
+                max={8}
+                value={selectedEdge.strokeWidth ?? edgeDefaults.strokeWidth}
+                onChange={(event) =>
+                  updateSelectedEdge({
+                    strokeWidth: Number(event.target.value),
+                  })
+                }
+              />
+            </Field>
+          </div>
         ) : (
           <p className="panel-hint">
             Select a node to edit its label and appearance.
           </p>
         )}
-        <details className="interaction-log">
-          <summary className="interaction-log-summary">
+        <section className="interaction-log" data-state={activityOpen ? 'open' : 'closed'}>
+          <button
+            className="interaction-log-summary"
+            type="button"
+            aria-expanded={activityOpen}
+            aria-controls="activity-panel"
+            onClick={() => setActivityOpen((open) => !open)}
+          >
             <ChevronRight
               className="interaction-log-chevron"
               size={13}
@@ -1031,29 +1406,33 @@ function App() {
                 {interactionLog.length}
               </span>
             ) : null}
-          </summary>
-          {interactionLog.length > 0 ? (
-            <>
-              <ol aria-live="polite">
-                {[...interactionLog].reverse().map((entry) => (
-                  <li key={entry.id}>
-                    <time>{entry.time}</time>
-                    <span>{entry.message}</span>
-                  </li>
-                ))}
-              </ol>
-              <button
-                className="interaction-log-clear"
-                type="button"
-                onClick={clearInteractionLog}
-              >
-                Clear activity
-              </button>
-            </>
-          ) : (
-            <p>No interactions recorded.</p>
-          )}
-        </details>
+          </button>
+          <div className="interaction-log-region" id="activity-panel">
+            <div className="interaction-log-content">
+              {interactionLog.length > 0 ? (
+                <>
+                  <ol aria-live="polite">
+                    {[...interactionLog].reverse().map((entry) => (
+                      <li key={entry.id}>
+                        <time>{entry.time}</time>
+                        <span>{entry.message}</span>
+                      </li>
+                    ))}
+                  </ol>
+                  <button
+                    className="interaction-log-clear"
+                    type="button"
+                    onClick={clearInteractionLog}
+                  >
+                    Clear activity
+                  </button>
+                </>
+              ) : (
+                <p>No interactions recorded.</p>
+              )}
+            </div>
+          </div>
+        </section>
       </aside>
 
       <ShortcutsDialog
@@ -1065,15 +1444,8 @@ function App() {
       <footer className="chrome-card statusbar">
         <span>{plural(nodes.length, 'node')}</span>
         <span>{plural(edges.length, 'connector')}</span>
-        {activeShape ? (
-          <span className="active-tool-status">
-            Draw {drawTools.find((tool) => tool.kind === activeShape)?.label}:
-            drag on canvas
-          </span>
-        ) : arrowActive ? (
-          <span className="active-tool-status">
-            Arrow: drag from one node handle to another
-          </span>
+        {toolHint ? (
+          <span className="active-tool-status">{toolHint}</span>
         ) : null}
         {interactionLog.length > 0 ? (
           <span className="interaction-status">
