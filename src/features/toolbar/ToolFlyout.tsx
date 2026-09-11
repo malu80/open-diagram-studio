@@ -5,7 +5,7 @@ import {
   RangeInput,
   SegmentedControl,
   SwatchPicker,
-  fillSwatches,
+  stickySwatches,
   strokeSwatches,
 } from '../../design-system'
 import type { DiagramNodeKind } from '../../domain/diagram'
@@ -107,7 +107,7 @@ export function ToolFlyout() {
           <SwatchPicker
             label="Sticky note colour"
             value={stickyColor}
-            options={fillSwatches}
+            options={stickySwatches}
             onSelect={setStickyColor}
           />
         </>

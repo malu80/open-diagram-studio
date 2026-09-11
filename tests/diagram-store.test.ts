@@ -32,6 +32,73 @@ describe('diagram store', () => {
       hydrated: true,
       saveState: 'saved',
     })
+    useDiagramStore.getState().clearHistory()
+  })
+
+  it('undoes and redoes creating a sticky note as one element', () => {
+    useDiagramStore.getState().drawNode('stickyNote', 40, 60, 180, 180, '#f5d1f5')
+    expect(useDiagramStore.getState().nodes).toHaveLength(1)
+    useDiagramStore.getState().clearSelection()
+
+    useDiagramStore.getState().undo()
+    expect(useDiagramStore.getState().nodes).toHaveLength(0)
+
+    useDiagramStore.getState().redo()
+    expect(useDiagramStore.getState().nodes[0]).toMatchObject({
+      kind: 'stickyNote',
+      fillColor: '#f5d1f5',
+      x: 40,
+      y: 60,
+      width: 180,
+      height: 180,
+    })
+  })
+
+  it('does not record React Flow selection or unchanged geometry', () => {
+    const store = useDiagramStore.getState()
+    store.drawNode('stickyNote', 40, 60, 180, 180)
+    const { nodes, edges } = useDiagramStore.getState()
+    store.clearHistory()
+    store.onNodesChange([{ id: nodes[0].id, type: 'select', selected: false }])
+    store.onNodesChange([{ id: nodes[0].id, type: 'position', position: { x: 40, y: 60 }, dragging: false }])
+    expect(useDiagramStore.getState().nodes).toBe(nodes)
+    expect(useDiagramStore.getState().edges).toBe(edges)
+    expect(useDiagramStore.temporal.getState().pastStates).toHaveLength(0)
+  })
+
+  it('undoes a complete text edit in one step and preserves redo', () => {
+    const store = useDiagramStore.getState()
+    store.drawNode('stickyNote', 40, 60, 180, 180)
+    const { id } = useDiagramStore.getState().nodes[0]
+    store.beginHistoryGroup()
+    store.updateNodeLabel(id, 'I')
+    store.updateNodeLabel(id, 'Idea')
+    store.endHistoryGroup()
+    store.undo()
+    expect(useDiagramStore.getState().nodes[0].label).toBe('')
+    store.redo()
+    expect(useDiagramStore.getState().nodes[0].label).toBe('Idea')
+  })
+
+  it('groups every pointer frame of a move and resize into complete operations', () => {
+    const store = useDiagramStore.getState()
+    store.drawNode('stickyNote', 40, 60, 180, 180)
+    const { id } = useDiagramStore.getState().nodes[0]
+    for (const position of [{ x: 50, y: 70 }, { x: 80, y: 100 }]) {
+      store.onNodesChange([{ id, type: 'position', position, dragging: true }])
+    }
+    store.onNodesChange([{ id, type: 'position', dragging: false }])
+    store.undo()
+    expect(useDiagramStore.getState().nodes[0]).toMatchObject({ x: 40, y: 60 })
+    store.redo()
+    for (const width of [200, 240]) {
+      store.onNodesChange([{ id, type: 'dimensions', dimensions: { width, height: 220 }, setAttributes: true, resizing: true }])
+    }
+    store.onNodesChange([{ id, type: 'dimensions', resizing: false }])
+    store.undo()
+    expect(useDiagramStore.getState().nodes[0]).toMatchObject({ x: 80, y: 100, width: 180, height: 180 })
+    store.redo()
+    expect(useDiagramStore.getState().nodes[0]).toMatchObject({ width: 240, height: 220 })
   })
 
   it('draws a selected node and commits its resized dimensions', () => {
@@ -85,8 +152,9 @@ describe('diagram store', () => {
   it('uses shape-specific defaults when adding nodes', () => {
     useDiagramStore.getState().addNode('text')
     useDiagramStore.getState().addNode('diamond')
+    useDiagramStore.getState().addNode('stickyNote')
 
-    const [text, diamond] = useDiagramStore.getState().nodes
+    const [text, diamond, stickyNote] = useDiagramStore.getState().nodes
     expect(text).toMatchObject({
       kind: 'text',
       label: '',
@@ -99,7 +167,14 @@ describe('diagram store', () => {
       width: 120,
       height: 120,
     })
-    expect(useDiagramStore.getState().selectedNodeIds).toEqual([diamond.id])
+    expect(stickyNote).toMatchObject({
+      kind: 'stickyNote',
+      label: '',
+      width: 180,
+      height: 180,
+      fillColor: '#fff9b1',
+    })
+    expect(useDiagramStore.getState().selectedNodeIds).toEqual([stickyNote.id])
   })
 
   it('removes blank text and orphaned arrows while hydrating', () => {

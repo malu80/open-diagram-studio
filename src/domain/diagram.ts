@@ -34,6 +34,12 @@ export interface FreehandStroke {
   points: StrokePoint[]
 }
 
+export interface StickyNoteStyle {
+  fontSize: 'auto' | number
+  textAlign: 'left' | 'center' | 'right'
+  bold: boolean
+}
+
 export interface DiagramNode {
   id: string
   kind: DiagramNodeKind
@@ -49,6 +55,7 @@ export interface DiagramNode {
   zIndex?: number
   /** Only present on `freehand` nodes. */
   freehand?: FreehandStroke
+  sticky?: StickyNoteStyle
 }
 
 /** How an edge is routed between its two endpoints. */

@@ -91,6 +91,87 @@ describe('duplicate', () => {
     expect(selectedNodeIds).toEqual([copy.id])
   })
 
+  it('duplicates a sticky note as one complete element', () => {
+    reset(
+      [
+        makeNode('sticky', {
+          kind: 'stickyNote',
+          width: 180,
+          height: 180,
+          label: 'One useful idea',
+          fillColor: '#fff9b1',
+          strokeColor: '#2e3442',
+        }),
+      ],
+      [],
+      ['sticky'],
+    )
+
+    useDiagramStore.getState().duplicateSelected()
+
+    const copy = useDiagramStore.getState().nodes[1]
+    expect(copy).toMatchObject({
+      kind: 'stickyNote',
+      x: 34,
+      y: 68,
+      width: 180,
+      height: 180,
+      label: 'One useful idea',
+      fillColor: '#fff9b1',
+      strokeColor: '#2e3442',
+    })
+  })
+
+  it('cascades sticky duplicates with exposed edges instead of reusing a stack position', () => {
+    reset([makeNode('sticky', { kind: 'stickyNote', x: 100, y: 200, width: 240, height: 120 })], [], ['sticky'])
+    const store = useDiagramStore.getState()
+    store.duplicateSelected()
+    store.duplicateSelected()
+    store.setSelection(['sticky'], [])
+    store.duplicateSelected()
+
+    const { nodes, selectedNodeIds } = useDiagramStore.getState()
+    expect(nodes.map(({ x, y }) => ({ x, y }))).toEqual([
+      { x: 100, y: 200 },
+      { x: 124, y: 248 },
+      { x: 148, y: 296 },
+      { x: 172, y: 344 },
+    ])
+    expect(nodes.map((node) => node.zIndex ?? 0)).toEqual([0, 1, 2, 3])
+    expect(selectedNodeIds).toEqual([nodes[3].id])
+  })
+
+  it('places the new sticky above existing layers while allowing intentional overlap', () => {
+    reset([
+      makeNode('sticky', { kind: 'stickyNote', x: 100, y: 100, width: 180, height: 180, zIndex: 20 }),
+      makeNode('frame', { kind: 'frame', x: 124, y: 148, width: 1000, height: 1000, zIndex: -1 }),
+      makeNode('other', { kind: 'stickyNote', x: 110, y: 120, zIndex: 99 }),
+    ], [], ['sticky'])
+
+    useDiagramStore.getState().duplicateSelected()
+
+    expect(useDiagramStore.getState().nodes[3]).toMatchObject({ x: 124, y: 148, zIndex: 100 })
+  })
+
+  it('keeps a multi-note layout and its connectors together in the offset stack', () => {
+    reset([
+      makeNode('first', { kind: 'stickyNote', x: 100, y: 100, height: 180 }),
+      makeNode('second', { kind: 'stickyNote', x: 320, y: 140, height: 120 }),
+    ], [makeEdge('edge', 'first', 'second')], ['first', 'second'])
+    const store = useDiagramStore.getState()
+    store.clearHistory()
+    store.duplicateSelected()
+
+    const { nodes, edges } = useDiagramStore.getState()
+    expect(nodes[2]).toMatchObject({ x: 124, y: 148 })
+    expect(nodes[3]).toMatchObject({ x: 344, y: 188 })
+    expect(edges[1]).toMatchObject({ source: nodes[2].id, target: nodes[3].id })
+    store.undo()
+    expect(useDiagramStore.getState().nodes).toHaveLength(2)
+    store.redo()
+    expect(useDiagramStore.getState().nodes).toEqual(nodes)
+  })
+
   it('carries over an edge whose two ends are both copied', () => {
     reset(
       [makeNode('a'), makeNode('b')],
@@ -141,6 +222,29 @@ describe('copy and paste', () => {
     expect(nodes).toHaveLength(2)
     expect(nodes[1].x).toBe(24)
     expect(selectedNodeIds).toEqual([nodes[1].id])
+  })
+
+  it('pastes sticky text and styling with the note', () => {
+    reset(
+      [
+        makeNode('sticky', {
+          kind: 'stickyNote',
+          label: 'Keep me attached',
+          fillColor: '#a6e3e3',
+        }),
+      ],
+      [],
+      ['sticky'],
+    )
+
+    useDiagramStore.getState().copySelected()
+    useDiagramStore.getState().pasteClipboard()
+
+    expect(useDiagramStore.getState().nodes[1]).toMatchObject({
+      kind: 'stickyNote',
+      label: 'Keep me attached',
+      fillColor: '#a6e3e3',
+    })
   })
 
   it('cascades repeated pastes instead of stacking them', () => {

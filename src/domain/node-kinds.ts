@@ -116,7 +116,8 @@ export const nodeKindSpecs: Record<DiagramNodeKind, NodeKindSpec> = {
     label: '',
     width: 180,
     height: 180,
-    fill: '#fbeecb',
+    fill: '#fff9b1',
+    outlineOnly: true,
   },
   frame: {
     group: 'standalone',

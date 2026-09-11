@@ -40,6 +40,27 @@ describe('diagram repository', () => {
     expect(loaded?.title).toBe(legacy.title)
   })
 
+  it('preserves a sticky note as one element when saving and loading', async () => {
+    const sticky = {
+      id: 'sticky-1',
+      kind: 'stickyNote' as const,
+      x: 80,
+      y: 120,
+      width: 220,
+      height: 180,
+      label: 'Persisted idea\nwith wrapped text',
+      sticky: { fontSize: 16, textAlign: 'right' as const, bold: true },
+      fillColor: '#fff9b1',
+      strokeColor: '#2e3442',
+      strokeWidth: 2,
+    }
+    await diagramRepository.save(document({ nodes: [sticky] }))
+
+    const loaded = await diagramRepository.load()
+
+    expect(loaded?.nodes).toEqual([sticky])
+  })
+
   it('starts fresh rather than crashing on an unreadable record', async () => {
     // Half a document — the shape corrupt or truncated data actually takes.
     // It keeps the fields the store itself indexes on, so it writes cleanly

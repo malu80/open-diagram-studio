@@ -18,6 +18,7 @@ import {
 } from '../../stores/diagram-store'
 import { penStyles, strokePathData } from '../../domain/freehand'
 import { specFor } from '../../domain/node-kinds'
+import { StickyNoteNode } from './StickyNoteNode'
 
 const architectureIcons = {
   client: Monitor,
@@ -77,14 +78,13 @@ function FreehandNode({ id, data, selected }: NodeProps<FlowDiagramNode>) {
 
 export function DiagramNode(props: NodeProps<FlowDiagramNode>) {
   if (props.data.kind === 'freehand') return <FreehandNode {...props} />
+  if (props.data.kind === 'stickyNote') return <StickyNoteNode {...props} />
   return <ShapeNode {...props} />
 }
 
 function ShapeNode({ id, data, selected }: NodeProps<FlowDiagramNode>) {
   const spec = specFor(data.kind)
-  const [editing, setEditing] = useState(
-    (data.kind === 'text' || data.kind === 'stickyNote') && selected,
-  )
+  const [editing, setEditing] = useState(data.kind === 'text' && selected)
   const updateNodeLabel = useDiagramStore((state) => state.updateNodeLabel)
   const removeNode = useDiagramStore((state) => state.removeNode)
   const resizeTextNode = useDiagramStore((state) => state.resizeTextNode)
@@ -97,7 +97,7 @@ function ShapeNode({ id, data, selected }: NodeProps<FlowDiagramNode>) {
     <div
       className={`diagram-node diagram-node--${data.kind}`}
       style={
-        data.kind === 'text' || data.kind === 'stickyNote'
+        data.kind === 'text'
           ? { color: data.strokeColor }
           : undefined
       }
@@ -211,10 +211,7 @@ function ShapeNode({ id, data, selected }: NodeProps<FlowDiagramNode>) {
             className="node-label"
             onDoubleClick={() => setEditing(true)}
           >
-            {data.label ||
-              (data.kind === 'stickyNote' || data.kind === 'text'
-                ? 'Double-click to type'
-                : '')}
+            {data.label || (data.kind === 'text' ? 'Double-click to type' : '')}
           </span>
         )}
       </div>

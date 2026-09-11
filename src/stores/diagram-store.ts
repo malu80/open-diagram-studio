@@ -5,6 +5,7 @@ import {
   type NodeChange,
 } from '@xyflow/react'
 import { create } from 'zustand'
+import { temporal } from 'zundo'
 import { nodeDefaults } from '../design-system/tokens'
 import { specFor } from '../domain/node-kinds'
 import {
@@ -26,6 +27,7 @@ export interface DiagramNodeData extends Record<string, unknown> {
   width: number
   height: number
   freehand?: FreehandStroke
+  sticky?: DiagramNode['sticky']
 }
 
 export type FlowDiagramNode = Node<DiagramNodeData, 'diagramNode'>
@@ -54,6 +56,7 @@ interface DiagramState {
     y: number,
     width: number,
     height: number,
+    fillColor?: string,
   ) => void
   /** A line drawn on the board, with either end optionally on a node. */
   addLine: (line: {
@@ -116,10 +119,21 @@ interface DiagramState {
         | 'y'
         | 'width'
         | 'height'
+        | 'sticky'
       >
     >,
   ) => void
+  undo: () => void
+  redo: () => void
+  clearHistory: () => void
+  beginHistoryGroup: () => void
+  endHistoryGroup: () => void
 }
+
+type DiagramHistory = Pick<DiagramState, 'title' | 'nodes' | 'edges'>
+let historyGroupDepth = 0
+let pendingHistorySave: (() => void) | undefined
+let geometryHistoryActive = false
 
 const initialDocument = createBlankDocument()
 const appendInteraction = (
@@ -142,19 +156,19 @@ const PASTE_OFFSET = 24
  * selection — an edge to something that was not copied has nothing to attach
  * to on the other side.
  */
-const offsetPoint = (point: StrokePoint | undefined, offset: number) =>
-  point ? { x: point.x + offset, y: point.y + offset } : undefined
+const offsetPoint = (point: StrokePoint | undefined, offset: StrokePoint) =>
+  point ? { x: point.x + offset.x, y: point.y + offset.y } : undefined
 
 const cloneSelection = (
   nodes: DiagramNode[],
   edges: DiagramEdge[],
-  offset: number,
+  offset: StrokePoint,
 ): { nodes: DiagramNode[]; edges: DiagramEdge[] } => {
   const idByOriginal = new Map<string, string>()
   const clonedNodes = nodes.map((node) => {
     const id = crypto.randomUUID()
     idByOriginal.set(node.id, id)
-    return { ...node, id, x: node.x + offset, y: node.y + offset }
+    return { ...node, id, x: node.x + offset.x, y: node.y + offset.y }
   })
   const attachedEndSurvives = (end: string | undefined) =>
     end === undefined || idByOriginal.has(end)
@@ -217,10 +231,13 @@ export const toFlowNode = (
     width: node.width,
     height: node.height,
     freehand: node.freehand,
+    sticky: node.sticky,
   },
 })
 
-export const useDiagramStore = create<DiagramState>((set, get) => ({
+export const useDiagramStore = create<DiagramState>()(
+  temporal<DiagramState, [], [], DiagramHistory>(
+    (set, get) => ({
   title: initialDocument.title,
   nodes: initialDocument.nodes,
   edges: initialDocument.edges,
@@ -261,7 +278,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         selectedEdgeIds: [],
       }
     }),
-  drawNode: (kind, x, y, width, height) =>
+  drawNode: (kind, x, y, width, height, fillColor) =>
     set((state) => {
       const node = createNode(kind, state.nodes.length, {
         x,
@@ -269,6 +286,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         width,
         height,
       })
+      if (fillColor !== undefined) node.fillColor = fillColor
       return {
         nodes: [...state.nodes, node],
         selectedNodeIds: [node.id],
@@ -333,7 +351,19 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         ),
       }
     }),
-  onNodesChange: (changes) =>
+  onNodesChange: (changes) => {
+    const moving = changes.some((change) =>
+      (change.type === 'position' && change.dragging === true) ||
+      (change.type === 'dimensions' && change.resizing === true),
+    )
+    const stopped = changes.some((change) =>
+      (change.type === 'position' && change.dragging === false) ||
+      (change.type === 'dimensions' && change.resizing === false),
+    )
+    if (moving && !geometryHistoryActive) {
+      geometryHistoryActive = true
+      get().beginHistoryGroup()
+    }
     set((state) => {
       const meaningfulChanges = changes.filter(
         (change) => change.type !== 'dimensions' || change.setAttributes,
@@ -353,12 +383,16 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       let nodes = nextFlowNodes.map((flowNode) => {
         const previous = nodeById.get(flowNode.id)!
         const dimensions = dimensionsById.get(flowNode.id)
+        const width = dimensions?.width ?? flowNode.width ?? previous.width
+        const height = dimensions?.height ?? flowNode.height ?? previous.height
+        if (previous.x === flowNode.position.x && previous.y === flowNode.position.y &&
+            previous.width === width && previous.height === height) return previous
         return {
           ...previous,
           x: flowNode.position.x,
           y: flowNode.position.y,
-          width: dimensions?.width ?? flowNode.width ?? previous.width,
-          height: dimensions?.height ?? flowNode.height ?? previous.height,
+          width,
+          height,
         }
       })
       const movedSelectedNodes = meaningfulChanges.filter(
@@ -376,25 +410,31 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
           const deltaX = moved.x - previous.x
           const deltaY = moved.y - previous.y
           nodes = nodes.map((node) =>
-            node.id !== movedId && state.selectedNodeIds.includes(node.id)
+            (deltaX !== 0 || deltaY !== 0) && node.id !== movedId && state.selectedNodeIds.includes(node.id)
               ? { ...node, x: node.x + deltaX, y: node.y + deltaY }
               : node,
           )
         }
       }
       const remainingIds = new Set(nodes.map((node) => node.id))
+      const edges = state.edges.filter(
+        (edge) =>
+          (edge.source === undefined || remainingIds.has(edge.source)) &&
+          (edge.target === undefined || remainingIds.has(edge.target)),
+      )
       return {
-        nodes,
-        edges: state.edges.filter(
-          (edge) =>
-            (edge.source === undefined || remainingIds.has(edge.source)) &&
-            (edge.target === undefined || remainingIds.has(edge.target)),
-        ),
+        nodes: nodes.length === state.nodes.length && nodes.every((node, index) => node === state.nodes[index]) ? state.nodes : nodes,
+        edges: edges.length === state.edges.length ? state.edges : edges,
         selectedNodeIds: nextFlowNodes
           .filter((node) => node.selected)
           .map((node) => node.id),
       }
-    }),
+    })
+    if (stopped && !moving && geometryHistoryActive) {
+      geometryHistoryActive = false
+      get().endHistoryGroup()
+    }
+  },
   connect: (connection) => {
     if (!connection.source || !connection.target) {
       set((state) => ({
@@ -475,7 +515,28 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         state.selectedNodeIds.includes(node.id),
       )
       if (sourceNodes.length === 0) return state
-      const copy = cloneSelection(sourceNodes, state.edges, PASTE_OFFSET)
+      const offset = { x: PASTE_OFFSET, y: PASTE_OFFSET }
+      const stickySelection = sourceNodes.every((node) => node.kind === 'stickyNote')
+      if (stickySelection) {
+        offset.y = PASTE_OFFSET * 2
+        while (sourceNodes.some((source) => state.nodes.some((node) =>
+          node.kind !== 'frame' &&
+          Math.abs(node.x - source.x - offset.x) < 1 &&
+          Math.abs(node.y - source.y - offset.y) < 1,
+        ))) {
+          offset.x += PASTE_OFFSET
+          offset.y += PASTE_OFFSET * 2
+        }
+      }
+      const copy = cloneSelection(sourceNodes, state.edges, offset)
+      if (stickySelection) {
+        const topLayer = Math.max(0, ...state.nodes.map((node) => node.zIndex ?? 0))
+        const sourceLayer = Math.min(...sourceNodes.map((node) => node.zIndex ?? 0))
+        copy.nodes = copy.nodes.map((node) => ({
+          ...node,
+          zIndex: topLayer + 1 + (node.zIndex ?? 0) - sourceLayer,
+        }))
+      }
       return {
         nodes: [...state.nodes, ...copy.nodes],
         edges: [...state.edges, ...copy.edges],
@@ -519,7 +580,7 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
       const copy = cloneSelection(
         state.clipboard.nodes,
         state.clipboard.edges,
-        PASTE_OFFSET,
+        { x: PASTE_OFFSET, y: PASTE_OFFSET },
       )
       return {
         nodes: [...state.nodes, ...copy.nodes],
@@ -597,4 +658,39 @@ export const useDiagramStore = create<DiagramState>((set, get) => ({
         state.selectedNodeIds.includes(node.id) ? { ...node, ...patch } : node,
       ),
     })),
-}))
+  undo: () => useDiagramStore.temporal.getState().undo(),
+  redo: () => useDiagramStore.temporal.getState().redo(),
+  clearHistory: () => {
+    historyGroupDepth = 0
+    geometryHistoryActive = false
+    pendingHistorySave = undefined
+    useDiagramStore.temporal.getState().clear()
+  },
+  beginHistoryGroup: () => { historyGroupDepth += 1 },
+  endHistoryGroup: () => {
+    historyGroupDepth = Math.max(0, historyGroupDepth - 1)
+    if (historyGroupDepth === 0) {
+      const save = pendingHistorySave
+      pendingHistorySave = undefined
+      save?.()
+    }
+  },
+    }),
+    {
+      limit: 100,
+      handleSet: (save) => (past) => {
+        if (historyGroupDepth > 0) pendingHistorySave ??= () => save(past)
+        else save(past)
+      },
+      partialize: (state) => ({
+        title: state.title,
+        nodes: state.nodes,
+        edges: state.edges,
+      }),
+      equality: (past, current) =>
+        past.title === current.title &&
+        past.nodes === current.nodes &&
+        past.edges === current.edges,
+    },
+  ),
+)

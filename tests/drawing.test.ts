@@ -61,4 +61,8 @@ describe('shouldConstrain', () => {
   it('always squares off a diamond', () => {
     expect(shouldConstrain('diamond', false)).toBe(true)
   })
+
+  it('allows a sticky note to be drawn as a rectangle', () => {
+    expect(shouldConstrain('stickyNote', false)).toBe(false)
+  })
 })
