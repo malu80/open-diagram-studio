@@ -499,19 +499,90 @@ textarea {
   border-radius: inherit;
 }
 
-/* --- Sticky note: no outline, a soft lift, and room to write. --- */
-.node-shape--stickyNote {
-  border-width: 0;
-  border-radius: var(--ds-radius-xs);
-  box-shadow: var(--ds-shadow-sm);
-}
-.diagram-node--stickyNote {
-  font-size: var(--ds-font-size-md);
+/* --- Sticky note: one paper surface with text laid directly onto it. --- */
+.sticky-note {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 14px;
+  overflow: visible;
   font-weight: var(--ds-font-weight-medium);
   line-height: var(--ds-line-height-snug);
+  text-align: left;
+  border-radius: 1px;
+  box-shadow: 0 1px 3px rgb(46 52 66 / 14%), 0 4px 10px rgb(46 52 66 / 18%);
 }
-.diagram-node--stickyNote .node-content { inset: var(--ds-space-2); }
-.diagram-node--stickyNote .node-label { overflow-wrap: anywhere; }
+.sticky-note__text,
+.sticky-note__measure,
+.sticky-note__editor {
+  width: 100%;
+  height: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+}
+.sticky-note:focus { outline: none; }
+.sticky-note__measure {
+  position: absolute;
+  inset: 14px;
+  width: auto;
+  height: auto;
+  visibility: hidden;
+  pointer-events: none;
+  overflow: hidden;
+}
+.sticky-note__editor {
+  appearance: none;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  font: inherit;
+  line-height: inherit;
+  text-align: inherit;
+  resize: none;
+}
+.ds-root .sticky-note__editor:focus,
+.ds-root .sticky-note__editor:focus-visible {
+  outline: 0;
+  box-shadow: none;
+}
+
+.sticky-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 4px;
+  color: var(--ds-color-text);
+  background: var(--ds-color-surface, white);
+  border: 1px solid var(--ds-color-border);
+  border-radius: 6px;
+  box-shadow: 0 3px 12px rgb(46 52 66 / 14%);
+}
+.sticky-toolbar__font { width: 64px; }
+.sticky-toolbar__segment {
+  display: flex;
+  border-inline: 1px solid var(--ds-color-border);
+  margin-inline: 2px;
+  padding-inline: 2px;
+}
+.sticky-toolbar__colors {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 176px;
+  padding: 12px;
+  background: var(--ds-color-surface, white);
+  border: 1px solid var(--ds-color-border);
+  border-radius: 6px;
+  box-shadow: 0 3px 12px rgb(46 52 66 / 14%);
+}
 
 /* --- Frame: a labelled container that sits behind what it groups. --- */
 .node-shape--frame {
@@ -918,14 +989,35 @@ textarea {
   .properties-panel { display: none; }
 
   /* The rail becomes a bottom bar so it never covers the drawing area. */
-  .tool-panel {
+  .tool-rail-anchor {
     top: auto;
     bottom: var(--chrome-inset);
-    left: 50%;
+    left: var(--chrome-inset);
+    right: var(--chrome-inset);
+    justify-content: center;
+    transform: none;
+  }
+  .tool-panel {
+    max-width: 100%;
+    overflow-x: auto;
     flex-direction: row;
-    transform: translateX(-50%);
+  }
+  .tool-flyout {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 8px);
+    max-width: 100%;
   }
   .tool-grid { grid-auto-flow: column; }
+  .topbar-identity {
+    left: var(--chrome-inset);
+    right: var(--chrome-inset);
+    min-width: 0;
+  }
+  .workspace-name { min-width: 0; flex: 1; }
+  .topbar-actions {
+    top: calc(var(--chrome-inset) + var(--topbar-card-height) + 8px);
+  }
 
   .zoom-toolbar {
     bottom: calc(
@@ -933,12 +1025,12 @@ textarea {
     );
   }
   .statusbar { display: none; }
-  .diagram-title { width: min(140px, 30vw); }
+  .diagram-title { width: 100%; min-width: 0; }
 
   /* The rail owns the bottom edge here, so the credit moves to the top,
      under the header cards. It keeps the library's own horizontal centring. */
   .canvas-wrap .react-flow__attribution {
-    top: calc(var(--chrome-inset) + var(--topbar-card-height) + var(--ds-space-05));
+    top: calc(var(--chrome-inset) + var(--topbar-card-height) * 2 + 12px);
     bottom: auto;
   }
 }

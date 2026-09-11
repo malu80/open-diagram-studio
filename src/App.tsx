@@ -48,6 +48,7 @@ import {
   duration,
   fillSwatches,
   readToken,
+  stickySwatches,
   strokeSwatches,
 } from './design-system'
 import {
@@ -166,6 +167,9 @@ function App() {
   const pasteClipboard = useDiagramStore((state) => state.pasteClipboard)
   const moveSelected = useDiagramStore((state) => state.moveSelected)
   const deleteSelected = useDiagramStore((state) => state.deleteSelected)
+  const undo = useDiagramStore((state) => state.undo)
+  const redo = useDiagramStore((state) => state.redo)
+  const clearHistory = useDiagramStore((state) => state.clearHistory)
   const updateSelectedNode = useDiagramStore(
     (state) => state.updateSelectedNode,
   )
@@ -194,7 +198,11 @@ function App() {
   const toolHint = (() => {
     switch (tool.kind) {
       case 'shape':
-        return `${specFor(tool.shape).label || 'Text'}: drag on the canvas`
+        return `${
+          tool.shape === 'stickyNote'
+            ? 'Sticky note'
+            : specFor(tool.shape).label || 'Text'
+        }: drag on the canvas`
       case 'line':
         return 'Line: drag on the canvas'
       case 'connector':
@@ -298,9 +306,15 @@ function App() {
   useEffect(() => {
     diagramRepository
       .load()
-      .then(hydrate)
-      .catch(() => hydrate(null))
-  }, [hydrate])
+      .then((document) => {
+        hydrate(document)
+        clearHistory()
+      })
+      .catch(() => {
+        hydrate(null)
+        clearHistory()
+      })
+  }, [clearHistory, hydrate])
 
   // Keeps <html data-theme> in step with the store, including on first mount
   // where it re-affirms whatever the pre-paint script in index.html set.
@@ -425,6 +439,27 @@ function App() {
 
     // Edit
     {
+      key: 'z',
+      mod: true,
+      shift: false,
+      run: undo,
+      title: 'Undo',
+      group: 'Edit',
+    },
+    {
+      key: 'z',
+      mod: true,
+      shift: true,
+      run: redo,
+      title: 'Redo',
+      group: 'Edit',
+    },
+    {
+      key: 'y',
+      mod: true,
+      run: redo,
+    },
+    {
       key: 'a',
       mod: true,
       run: selectAll,
@@ -455,6 +490,7 @@ function App() {
     {
       key: 'escape',
       run: escape,
+      stopPropagation: true,
       title: 'Cancel tool or selection',
       group: 'Edit',
     },
@@ -838,10 +874,7 @@ function App() {
     const draggedWidth = end.x - start.x
     const draggedHeight = end.y - start.y
     const wasClick = draggedWidth < 12 && draggedHeight < 12
-    const defaultWidth =
-      activeShape === 'text' ? 200 : activeShape === 'diamond' ? 120 : 156
-    const defaultHeight =
-      activeShape === 'text' ? 40 : activeShape === 'diamond' ? 120 : 84
+    const { width: defaultWidth, height: defaultHeight } = specFor(activeShape)
 
     drawNode(
       activeShape,
@@ -849,12 +882,8 @@ function App() {
       wasClick ? start.y - defaultHeight / 2 : start.y,
       wasClick ? defaultWidth : Math.max(44, draggedWidth),
       wasClick ? defaultHeight : Math.max(44, draggedHeight),
+      activeShape === 'stickyNote' ? stickyColor : undefined,
     )
-    // Sticky notes take the colour chosen in the flyout rather than the
-    // generic node default.
-    if (activeShape === 'stickyNote') {
-      updateSelectedNode({ fillColor: stickyColor })
-    }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
@@ -1134,7 +1163,7 @@ function App() {
           <div>
             <h2>
               {selectedNode
-                ? 'Node properties'
+                ? selectedNode.kind === 'stickyNote' ? 'Sticky note' : 'Node properties'
                 : selectedEdge
                   ? 'Arrow properties'
                   : 'Nothing selected'}
@@ -1207,7 +1236,7 @@ function App() {
             </div>
 
             <div className="property-section-title"><span>Appearance</span></div>
-            <Field label="Label" htmlFor="node-label">
+            {selectedNode.kind !== 'stickyNote' && <Field label="Label" htmlFor="node-label">
               <TextInput
                 id="node-label"
                 value={selectedNode.label}
@@ -1216,32 +1245,43 @@ function App() {
                   updateSelectedNode({ label: event.target.value })
                 }
               />
-            </Field>
+            </Field>}
 
             {selectedNode.kind !== 'text' ? (
               <Field label="Fill">
                 <SwatchPicker
                   label="Fill colour presets"
                   value={selectedNode.fillColor}
-                  options={fillSwatches}
+                  options={
+                    selectedNode.kind === 'stickyNote'
+                      ? stickySwatches
+                      : fillSwatches
+                  }
                   onSelect={(fillColor) => updateSelectedNode({ fillColor })}
                 />
-                <ColorInput
-                  aria-label="Custom fill colour"
-                  value={selectedNode.fillColor}
-                  onChange={(event) =>
-                    updateSelectedNode({ fillColor: event.target.value })
-                  }
-                />
+                {selectedNode.kind !== 'stickyNote' ? (
+                  <ColorInput
+                    aria-label="Custom fill colour"
+                    value={selectedNode.fillColor}
+                    onChange={(event) =>
+                      updateSelectedNode({ fillColor: event.target.value })
+                    }
+                  />
+                ) : null}
               </Field>
             ) : null}
 
             <Field
-              label={selectedNode.kind === 'text' ? 'Text colour' : 'Stroke'}
+              label={
+                selectedNode.kind === 'text' ||
+                selectedNode.kind === 'stickyNote'
+                  ? 'Text colour'
+                  : 'Stroke'
+              }
             >
               <SwatchPicker
                 label={
-                  selectedNode.kind === 'text'
+                  selectedNode.kind === 'text' || selectedNode.kind === 'stickyNote'
                     ? 'Text colour presets'
                     : 'Stroke colour presets'
                 }
@@ -1251,7 +1291,7 @@ function App() {
               />
               <ColorInput
                 aria-label={
-                  selectedNode.kind === 'text'
+                  selectedNode.kind === 'text' || selectedNode.kind === 'stickyNote'
                     ? 'Custom text colour'
                     : 'Custom stroke colour'
                 }
@@ -1262,7 +1302,8 @@ function App() {
               />
             </Field>
 
-            {selectedNode.kind !== 'text' ? (
+            {selectedNode.kind !== 'text' &&
+            selectedNode.kind !== 'stickyNote' ? (
               <Field
                 htmlFor="node-stroke-width"
                 label={

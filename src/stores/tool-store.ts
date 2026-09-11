@@ -96,7 +96,7 @@ export const useToolStore = create<ToolState>((set, get) => ({
   libraryOpen: false,
   penColor: strokeSwatches[0].value,
   penWidth: 4,
-  stickyColor: '#fbeecb',
+  stickyColor: '#fff9b1',
 
   lastShape: 'rectangle',
   lastArchitecture: 'server',

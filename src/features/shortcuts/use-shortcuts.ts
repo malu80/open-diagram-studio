@@ -37,6 +37,11 @@ export interface ShortcutBinding {
 
 const TEXT_FIELD = 'input, textarea, select, [contenteditable="true"]'
 
+export function isTypeToEditKey(event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'isComposing'>): boolean {
+  return !event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing &&
+    (event.key.length === 1 || event.key === 'Enter')
+}
+
 function isTextField(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && target.matches(TEXT_FIELD)
 }
@@ -90,6 +95,8 @@ export function useShortcuts(bindings: ShortcutBinding[]): void {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLElement &&
+          event.target.matches('[data-type-to-edit]') && isTypeToEditKey(event)) return
       const inTextField = isTextField(event.target)
       for (const binding of latest.current) {
         if (inTextField && !binding.allowInTextField) continue

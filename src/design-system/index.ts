@@ -43,7 +43,9 @@ export {
   canvasTokens,
   fillSwatches,
   nodeDefaults,
+  stickySwatches,
   strokeSwatches,
   type FillSwatch,
+  type StickySwatch,
   type StrokeSwatch,
 } from './tokens'

@@ -34,6 +34,11 @@ const node = z.object({
   strokeWidth: z.number(),
   zIndex: z.number().optional(),
   freehand: freehandStroke.optional(),
+  sticky: z.object({
+    fontSize: z.union([z.literal('auto'), z.number().min(1).max(96)]),
+    textAlign: z.enum(['left', 'center', 'right']),
+    bold: z.boolean(),
+  }).optional(),
 })
 
 const edge = z.object({

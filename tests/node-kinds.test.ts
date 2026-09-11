@@ -7,6 +7,7 @@ import {
   specFor,
 } from '../src/domain/node-kinds'
 import type { DiagramNodeKind } from '../src/domain/diagram'
+import { fittedStickyFontSize } from '../src/domain/sticky-note'
 
 describe('node kind table', () => {
   it('describes every kind the domain declares', () => {
@@ -47,6 +48,7 @@ describe('node kind table', () => {
   it('squares off the shapes that read wrong otherwise', () => {
     expect(specFor('diamond').alwaysSquare).toBe(true)
     expect(specFor('star').alwaysSquare).toBe(true)
+    expect(specFor('stickyNote').alwaysSquare).toBeUndefined()
     expect(specFor('rectangle').alwaysSquare).toBeUndefined()
   })
 
@@ -64,5 +66,12 @@ describe('node kind table', () => {
     ;(['triangle', 'parallelogram', 'hexagon', 'star'] as const).forEach(
       (kind) => expect(specFor(kind).polygon).toContain('polygon('),
     )
+  })
+
+  it('chooses the largest sticky font that fits measured content', () => {
+    expect(fittedStickyFontSize((size) => size <= 17)).toBe(17)
+    expect(fittedStickyFontSize(() => true)).toBe(20)
+    expect(fittedStickyFontSize((size) => size <= 5)).toBe(5)
+    expect(fittedStickyFontSize(() => false)).toBe(1)
   })
 })

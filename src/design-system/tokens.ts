@@ -50,6 +50,26 @@ export const fillSwatches = [
   { name: 'Pink', token: '--ds-swatch-pink', value: '#fadff0' },
 ] as const
 
+/** Bright, legible paper colours reserved for sticky notes. */
+export const stickySwatches = [
+  { name: 'Light yellow', value: '#fff9b1' },
+  { name: 'Yellow', value: '#f5d128' },
+  { name: 'Orange', value: '#ff9d48' },
+  { name: 'Red', value: '#f24726' },
+  { name: 'Light pink', value: '#f5b7d2' },
+  { name: 'Pink', value: '#ea94bb' },
+  { name: 'Violet', value: '#b384bb' },
+  { name: 'Light blue', value: '#a2d5f2' },
+  { name: 'Blue', value: '#6cc5ec' },
+  { name: 'Cyan', value: '#a6e3e3' },
+  { name: 'Light green', value: '#d5f692' },
+  { name: 'Green', value: '#7ac673' },
+  { name: 'Mint', value: '#9fe8c3' },
+  { name: 'Lavender', value: '#d0c2f0' },
+  { name: 'Gray', value: '#e6e6e6' },
+  { name: 'White', value: '#ffffff' },
+] as const
+
 /** Stroke swatches, tuned to stay legible against every fill above. */
 export const strokeSwatches = [
   { name: 'Ink', value: '#2e3442' },
@@ -76,4 +96,5 @@ export const nodeDefaults = {
 } as const
 
 export type FillSwatch = (typeof fillSwatches)[number]
+export type StickySwatch = (typeof stickySwatches)[number]
 export type StrokeSwatch = (typeof strokeSwatches)[number]
