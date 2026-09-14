@@ -79,6 +79,7 @@ import {
 import type { StrokePoint } from './domain/diagram'
 import { DiagramEdges } from './features/diagram/DiagramEdges'
 import { DiagramNode } from './features/diagram/DiagramNode'
+import { LandingPage } from './features/landing/LandingPage'
 import {
   type FlowDiagramNode,
   toFlowNode,
@@ -137,7 +138,7 @@ function makeDocument(
   }
 }
 
-function App() {
+function DiagramStudio() {
   const title = useDiagramStore((state) => state.title)
   const nodes = useDiagramStore((state) => state.nodes)
   const edges = useDiagramStore((state) => state.edges)
@@ -1509,6 +1510,16 @@ function App() {
         </span>
       </footer>
     </main>
+  )
+}
+
+function App() {
+  const [studioOpen, setStudioOpen] = useState(false)
+
+  return studioOpen ? (
+    <DiagramStudio />
+  ) : (
+    <LandingPage onEnter={() => setStudioOpen(true)} />
   )
 }
 
